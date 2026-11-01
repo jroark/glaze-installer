@@ -13,7 +13,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT / 'installer'), str(ROOT / 'tools'), str(ROOT / 'tests')]
+# mkota and the OTA test fixtures are glaze-os's (GLAZE_DIR, default ../glaze-os).
+GLAZE = Path(os.environ.get('GLAZE_DIR', ROOT.parent / 'glaze-os')).resolve()
+sys.path[:0] = [str(ROOT / 'installer'), str(GLAZE / 'tools'), str(GLAZE / 'tests')]
 from engine import Installer, version_key
 from app_selection import archive
 import package
@@ -184,7 +186,7 @@ class SignedPayload(unittest.TestCase):
             (root / 'out/glaze.bin').write_bytes(b'\xff' * 0x14000 + payload)
             update = root / 'update.gzu'
             update.write_bytes(data)
-            with patch.object(package, 'ROOT', root):
+            with patch.object(package, 'GLAZE', root):
                 self.assertEqual(package.validate_update(update, 'release')['version'], '1.1')
                 with self.assertRaises(ValueError):
                     package.validate_update(update, 'wrong-build')

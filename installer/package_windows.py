@@ -13,7 +13,7 @@ import subprocess
 import urllib.request
 import zipfile
 
-from package import ROOT, stage_resources
+from package import GLAZE, ROOT, stage_resources
 
 
 def run(*command):
@@ -55,21 +55,21 @@ def main():
     rc.write_text('1 24 "' + str(ROOT / 'installer/windows.manifest') + '"\n')
     resource = native / 'manifest.o'
     run(windres, '-i', rc, '-o', resource)
-    includes = ['installer/compat', 'tools/glaze-usb', 'lib/include', 'servers/fs',
-                'third_party/littlefs', 'third_party/dhara']
+    # installer/compat is this repository's; the rest are glaze-os sources.
+    includes = ['tools/glaze-usb', 'lib/include', 'servers/fs', 'third_party/littlefs', 'third_party/dhara']
     flags = ['-std=gnu11', '-O2', '-Wall', '-Wextra', '-Wno-unused-parameter', '-static',
              '-pthread', '-include', str(ROOT / 'installer/compat.h'), '-I' + str(libusb / 'include')]
-    flags += ['-I' + str(ROOT / name) for name in includes]
+    flags += ['-I' + str(ROOT / 'installer/compat')] + ['-I' + str(GLAZE / name) for name in includes]
     def compile(name, sources, libraries=()):
-        run(cc, *flags, *[ROOT / p for p in sources], resource, *libraries, '-o', native / name)
+        run(cc, *flags, *[GLAZE / p for p in sources], resource, *libraries, '-o', native / name)
     usb = 'tools/glaze-usb/'
     compile('glaze-installer-usb.exe', ['installer/helper.c'] + [usb + n + '.c' for n in
             ('transport', 'client', 'pcconnect', 'nand', 'nand_write')],
             [libusb / 'MinGW64/static/libusb-1.0.dll.a', '-lbcrypt'])
     compile('nand-inventory.exe', ['host/nand_inventory.c', 'kernel/drivers/nand_boot.c', 'kernel/drivers/nand_ecc.c'])
     fs = ['host/mkfsimg.c', 'servers/fs/ftl.c', 'third_party/littlefs/lfs.c', 'third_party/littlefs/lfs_util.c']
-    fs += [str(p.relative_to(ROOT)) for p in (ROOT / 'third_party/dhara/dhara').glob('*.c')]
-    fs += [str(p.relative_to(ROOT)) for p in (ROOT / 'third_party/dhara/ecc').glob('*.c')]
+    fs += [str(p.relative_to(GLAZE)) for p in (GLAZE / 'third_party/dhara/dhara').glob('*.c')]
+    fs += [str(p.relative_to(GLAZE)) for p in (GLAZE / 'third_party/dhara/ecc').glob('*.c')]
     compile('mkfsimg.exe', fs)
     product = out / 'Glaze Installer'
     if product.exists():

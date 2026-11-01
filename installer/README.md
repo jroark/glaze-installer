@@ -99,7 +99,9 @@ or an armed update may require finishing recovery before cleanup is possible.
 
 ## Build matching payloads
 
-Use the `mips-cross-dev` Docker image and the BE-300 CE toolchain:
+The payloads are built in a glaze-os checkout (`GLAZE_DIR`, default `../glaze-os`),
+and the optional apps in glaze-apps and glaze-emulators (`./build.sh` in each).
+In glaze-os, with the `mips-cross-dev` Docker image and the BE-300 CE toolchain:
 
 ```sh
 python3 tools/fetch_wl54cf_firmware.py
@@ -107,14 +109,14 @@ python3 tools/fetch_wl54cf_firmware.py
 make glazeboot-exe usb-probe-exe BE300_DEV=/path/to/be300-dev
 ```
 
-Produce a standard signed update with `make ota` (see `docs/os/OTA.md`).
+Produce a standard signed update with `make ota` in glaze-os (see its `docs/os/OTA.md`).
 Pass its `.gzu` file with `--os-update` to either packaging command. Packaging
 checks its release-key signature, version/build, block checksums and exact
-kernel/ROMFS match against `out/glaze.bin`. Private signing keys are never bundled.
+kernel/ROMFS match against glaze-os's `out/glaze.bin`. Private signing keys are never bundled.
 OpenSSL 3 is required for this packaging verification (`OPENSSL` overrides it).
 
 The packaging build ID must match the compiled kernel. The NAND image, RAM image,
-CE loader, all `out/pkg/*.gzp` packages, and source must come from matching builds.
+CE loader, all packages (each repository's `out/pkg/*.gzp`), and source must come from matching builds.
 Do not include proprietary ROM or game data in the input tree.
 
 ## macOS packaging
@@ -128,7 +130,7 @@ python3.11 -m venv out/installer-venv
 out/installer-venv/bin/python -m pip install -r installer/requirements.txt
 cmake -S installer -B out/installer-native -DCMAKE_BUILD_TYPE=Release
 cmake --build out/installer-native -j8
-out/installer-venv/bin/python installer/package.py --build-id usb-installer-modal-v1 --os-update out/ota/os/glaze-VERSION.gzu
+out/installer-venv/bin/python installer/package.py --build-id usb-installer-modal-v1 --os-update ../glaze-os/out/ota/os/glaze-VERSION.gzu
 ```
 
 `--native-dir` selects an alternative helper build directory. The generated DMG
@@ -144,7 +146,7 @@ cross compiler, NSIS, `7z`, and `msiextract`. On macOS:
 
 ```sh
 brew install mingw-w64 nsis p7zip msitools
-python3 installer/package_windows.py --build-id usb-installer-modal-v1 --os-update out/ota/os/glaze-VERSION.gzu
+python3 installer/package_windows.py --build-id usb-installer-modal-v1 --os-update ../glaze-os/out/ota/os/glaze-VERSION.gzu
 ```
 
 This downloads official CPython 3.11.9/Tk, libusb 1.0.30, and Zadig 2.9 with locked
@@ -165,6 +167,7 @@ python3 installer/collect_downloads.py
 python3 tests/installer.py
 python3 tests/installer_apps.py
 python3 tests/installer_maintenance.py
+# in glaze-os, which owns the maintenance package, NAND tools and USB client:
 python3 tests/maintenance_native.py
 python3 tests/physical_nand.py
 python3 tests/nand_transaction.py

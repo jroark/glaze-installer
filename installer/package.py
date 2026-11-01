@@ -14,12 +14,14 @@ import tempfile
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
+# The OS build, its tools and firmware come from a glaze-os checkout (GLAZE_DIR).
+GLAZE = Path(os.environ.get('GLAZE_DIR', ROOT.parent / 'glaze-os')).resolve()
 
 
 def package_infos():
     """Package Info files here and in the built sibling app repositories."""
-    repos = [ROOT, Path(os.environ.get('APPS_DIR', ROOT.parent / 'glaze-apps')),
-             Path(os.environ.get('EMU_DIR', ROOT.parent / 'glaze-emulators'))]
+    repos = [GLAZE, Path(os.environ.get('APPS_DIR', GLAZE.parent / 'glaze-apps')),
+             Path(os.environ.get('EMU_DIR', GLAZE.parent / 'glaze-emulators'))]
     for repo in repos[1:]:
         if not (repo / 'packages').is_dir():
             print(f'note: {repo} not found; its apps are left out of the installer', file=sys.stderr)
@@ -36,13 +38,13 @@ def validate_update(path, build_id):
     version = data[24:40].split(b'\0')[0].decode('ascii')
     build = data[40:72].split(b'\0')[0].decode('ascii')
     if (header != 512 or size != len(data) or not 12 <= count <= 315 or
-            build != build_id or version != (ROOT / 'VERSION').read_text().strip() or
+            build != build_id or version != (GLAZE / 'VERSION').read_text().strip() or
             hashlib.sha256(data[512:]).digest() != data[72:104]):
         raise ValueError('OS update does not match the release')
     # Verify with the same pinned release key trusted by the device.
     with tempfile.TemporaryDirectory() as folder:
         folder = Path(folder)
-        (folder / 'key.der').write_bytes(bytes.fromhex('302a300506032b6570032100') + (ROOT / 'config/ota_pubkey.bin').read_bytes())
+        (folder / 'key.der').write_bytes(bytes.fromhex('302a300506032b6570032100') + (GLAZE / 'config/ota_pubkey.bin').read_bytes())
         (folder / 'header').write_bytes(data[:448])
         (folder / 'signature').write_bytes(data[448:512])
         candidates = [os.environ['OPENSSL']] if os.environ.get('OPENSSL') else ['openssl', '/opt/homebrew/bin/openssl', '/usr/local/opt/openssl@3/bin/openssl', '/opt/homebrew/opt/openssl@3/bin/openssl']
@@ -70,7 +72,7 @@ def validate_update(path, build_id):
             raise ValueError('Invalid update block checksum')
         blocks.append(block)
     payload = b''.join(blocks)
-    logical = (ROOT / 'out/glaze.bin').read_bytes()
+    logical = (GLAZE / 'out/glaze.bin').read_bytes()
     if payload != logical[0x14000:0x14000+len(payload)]:
         raise ValueError('Signed update differs from bundled NAND kernel/ROMFS')
     return {'version': version, 'build': build, 'spl_min': spl}
@@ -86,18 +88,18 @@ def stage_resources(out, native_dir, build_id, ext='', os_update=None):
         shutil.copy2(native_dir / (name + ext), resources / 'bin')
     (resources / 'ram').mkdir()
     for name in ('GlazeBoot.exe', 'UsbProbe.exe', 'kernel.bin', 'romfs.img'):
-        shutil.copy2(ROOT / 'out/glazeboot' / name, resources / 'ram')
-    shutil.copy2(ROOT / 'out/glaze.bin', resources)
+        shutil.copy2(GLAZE / 'out/glazeboot' / name, resources / 'ram')
+    shutil.copy2(GLAZE / 'out/glaze.bin', resources)
     shutil.copy2(os_update, resources / 'update.gzu')
-    shutil.copy2(ROOT / 'out/pkg/maintenance.gzp', resources / 'maintenance.gzp')
-    shutil.copy2(ROOT / 'LICENSE', resources / 'LICENSE')
-    shutil.copytree(ROOT / 'userdata', resources / 'userdata')
+    shutil.copy2(GLAZE / 'out/pkg/maintenance.gzp', resources / 'maintenance.gzp')
+    shutil.copy2(GLAZE / 'LICENSE', resources / 'LICENSE')
+    shutil.copytree(GLAZE / 'userdata', resources / 'userdata')
     (resources / 'tools').mkdir()
     for name in ('physical_nand.py', 'nand_transaction.py'):
-        shutil.copy2(ROOT / 'tools' / name, resources / 'tools')
+        shutil.copy2(GLAZE / 'tools' / name, resources / 'tools')
     # The complete offline catalog is shipped even when optional apps are deselected.
     catalog = []
-    draw = (ROOT / 'servers/springboard/draw.c').read_text()
+    draw = (GLAZE / 'servers/springboard/draw.c').read_text()
     for name, program in re.findall(r'\.label = "([^"]+)".*?\.path = "bin/([^"]+)"', draw):
         catalog.append({'id': 'builtin:' + program, 'name': name, 'program': program,
                         'kind': 'builtin', 'required': program in ('files', 'settings'), 'default': True})
@@ -121,24 +123,24 @@ def stage_resources(out, native_dir, build_id, ext='', os_update=None):
     notices.mkdir()
     # Only the exact redistributable Linux pair is included, with provenance
     # and its complete notice. The vendor-CAB helper is deliberately rejected.
-    firmware_manifest = json.loads((ROOT / 'firmware/wl54cf-linux.json').read_text())
+    firmware_manifest = json.loads((GLAZE / 'firmware/wl54cf-linux.json').read_text())
     (resources / 'firmware').mkdir()
     for name, entry in firmware_manifest['files'].items():
         if not name.startswith('libertas/'):
             continue
-        source = ROOT / 'firmware/wl54cf' / Path(name).name
+        source = GLAZE / 'firmware/wl54cf' / Path(name).name
         data = source.read_bytes()
         if len(data) != entry['size_bytes'] or hashlib.sha256(data).hexdigest() != entry['sha256']:
             raise ValueError('Unexpected WL54-CF firmware: ' + str(source))
         (resources / 'firmware' / source.name).write_bytes(data)
-    notice = (ROOT / 'firmware/LICENCE.Marvell').read_bytes()
+    notice = (GLAZE / 'firmware/LICENCE.Marvell').read_bytes()
     expected = firmware_manifest['files']['LICENCE.Marvell']
     if len(notice) != expected['size_bytes'] or hashlib.sha256(notice).hexdigest() != expected['sha256']:
         raise ValueError('Unexpected Marvell redistribution notice')
     (notices / 'LICENCE.Marvell').write_bytes(notice)
-    shutil.copy2(ROOT / 'firmware/wl54cf-linux.json', notices)
+    shutil.copy2(GLAZE / 'firmware/wl54cf-linux.json', notices)
     for component in ('littlefs', 'dhara'):
-        for path in (ROOT / 'third_party' / component).glob('*'):
+        for path in (GLAZE / 'third_party' / component).glob('*'):
             if path.is_file() and path.name.lower().startswith(('license', 'copying')):
                 shutil.copy2(path, notices / (component + '-' + path.name))
     manifest = {'version': 1, 'build_id': build_id, 'os': os_metadata, 'files': {}}

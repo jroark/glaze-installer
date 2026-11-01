@@ -242,7 +242,9 @@ class OfflinePipelineTest(unittest.TestCase):
         import importlib.util
         import shutil
         root = Path(__file__).resolve().parents[1]
-        spec = importlib.util.spec_from_file_location('physical_fixture', root / 'tests/physical_nand.py')
+        # glaze-os's physical NAND fixture (GLAZE_DIR, default ../glaze-os).
+        glaze = Path(__import__('os').environ.get('GLAZE_DIR', root.parent / 'glaze-os')).resolve()
+        spec = importlib.util.spec_from_file_location('physical_fixture', glaze / 'tests/physical_nand.py')
         fixture = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(fixture)
         fixture.PhysicalNand.setUpClass()
