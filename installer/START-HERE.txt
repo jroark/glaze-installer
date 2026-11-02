@@ -5,7 +5,10 @@ or additional download is needed.
 
 macOS: drag Glaze Installer into Applications and open it.
 Windows: run setup and launch Glaze Installer. If needed, use USB driver setup
-in the app. In the bundled Zadig, select only the BE-300 (07CF:2002) and WinUSB.
+in the app. In Zadig, enable Options -> List All Devices. Select USB ID 07CF:2002
+(BE-300 or Unknown Device #1, Casio) and install libusbK. Replace an existing
+WinUSB binding too: it cannot perform the device reset needed after RAM restarts.
+Keep only one BE-300 connected.
 
 On the BE-300, open Connections -> PC Connect -> Connection method and select
 'USB' (not serial). Then connect USB and external power, choose your apps, and
@@ -29,8 +32,8 @@ After installation, Open backup shows the saved folder. Keep that entire folder
 for Restore Windows CE. CE RAM files are cleared when Glaze starts, so save
 anything important from CE's volatile object store beforehand.
 
-These are development builds. Physical flashing and Windows USB driver setup
-still need validation; Windows GUI/runtime checks were performed under Wine.
+These are development builds. See installer/VALIDATION.md in the source checkout
+for the recorded Windows and hardware validation results.
 
 ALREADY RUNNING GLAZE?
 Connect USB and power, then use Update Glaze OS or Install apps. Updates use the

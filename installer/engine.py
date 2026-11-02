@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -31,7 +32,7 @@ def load_module(name, path):
 
 
 class Installer:
-    def __init__(self, resources, emit, device='auto'):
+    def __init__(self, resources, emit, device='auto', state_dir=None):
         self.resources = Path(resources).resolve()
         self.emit = emit
         self.device = device
@@ -41,6 +42,38 @@ class Installer:
         self.verify_wince = True
         self.install_ui = False
         self.restoring = False
+        self.state_dir = Path(state_dir) if state_dir is not None else Path(
+            os.environ.get('LOCALAPPDATA', Path.home() / '.local/state')) / 'Glaze Installer/State'
+
+    def pending_path(self):
+        return self.state_dir / ('pending-' + hashlib.sha256(self.device.encode()).hexdigest()[:16] + '.json')
+
+    def pending(self):
+        try:
+            data = json.loads(self.pending_path().read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            return None
+        if (data.get('version') != 1 or data.get('device') != self.device
+                or data.get('phase') not in ('prepared', 'programming', 'programmed')
+                or not isinstance(data.get('record'), str) or not isinstance(data.get('record_sha256'), str)):
+            raise ValueError('Invalid pending installation record. Keep the saved CE backup and inspect Details.')
+        return data
+
+    def save_pending(self, record_path, phase):
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        record_path = Path(record_path).resolve()
+        data = {'version': 1, 'device': self.device, 'record': str(record_path),
+                'record_sha256': digest(record_path), 'phase': phase}
+        path = self.pending_path()
+        temporary = path.with_suffix('.' + uuid.uuid4().hex + '.tmp')
+        try:
+            with temporary.open('x', encoding='utf-8') as stream:
+                json.dump(data, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def verify(self):
         manifest = json.loads((self.resources / 'manifest.json').read_text())
@@ -56,39 +89,66 @@ class Installer:
 
     def run(self, *args):
         self.emit({'event': 'phase', 'text': str(args[0])})
+        deadline = getattr(self, 'command_deadline', None)
+        if deadline is not None and time.monotonic() >= deadline:
+            raise RuntimeError('USB reconnect deadline expired.')
         p = subprocess.Popen([str(self.helper), self.device, *map(str, args)],
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, encoding='utf-8', errors='replace',
                              creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         events = []
-        for line in p.stdout:
-            line = line.strip()
-            try:
-                event = json.loads(line)
-            except ValueError:
-                event = {'event': 'log', 'text': line}
-                match = re.search(r'runtime=Glaze build=(\S+)', line)
-                if match:
-                    self.build = match[1]
-            if event.get('event') == 'device' and event.get('runtime') == 'CE':
-                self.install_ui = False
-            if event.get('event') == 'capabilities':
-                self.install_ui = bool(event['value'] & 32768)
-            events.append(event)
-            if event.get('event') == 'log':
-                progress = re.search(r'(.*?): (\d+)/(32768) pages', line)
-                if progress:
-                    self.emit({'event': 'progress', 'phase': progress[1], 'current': int(progress[2]), 'total': int(progress[3])})
-            self.emit(event)
-        if p.wait():
+        timer = None
+        if deadline is not None:
+            timer = threading.Timer(max(0, deadline-time.monotonic()), p.kill)
+            timer.daemon = True
+            timer.start()
+        try:
+            for line in p.stdout:
+                line = line.strip()
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    event = {'event': 'log', 'text': line}
+                    match = re.search(r'runtime=Glaze build=(\S+)', line)
+                    if match:
+                        self.build = match[1]
+                if event.get('event') == 'device' and event.get('runtime') == 'CE':
+                    self.install_ui = False
+                if event.get('event') == 'capabilities':
+                    self.install_ui = bool(event['value'] & 32768)
+                events.append(event)
+                if event.get('event') == 'log':
+                    progress = re.search(r'(.*?): (\d+)/(32768) pages', line)
+                    if progress:
+                        self.emit({'event': 'progress', 'phase': progress[1], 'current': int(progress[2]), 'total': int(progress[3])})
+                self.emit(event)
+            code = p.wait()
+        finally:
+            if timer:
+                timer.cancel()
+            close = getattr(p.stdout, 'close', None)
+            if close:
+                close()
+        if code:
             if args[0] == 'boot' and any('No CE staging volume has enough' in e.get('text', '') for e in events):
                 raise RuntimeError('Not enough NAND space to start Glaze. In Windows CE, delete built-in apps you no longer need, keeping PC Connect available, then try again.')
-            raise RuntimeError(f'{args[0]} failed. See the saved log; no automatic retry was attempted.')
+            failure = next((e for e in events if e.get('event') == 'failure'), {})
+            diagnostics = [e['text'] for e in events if e.get('event') == 'log' and e.get('text')]
+            detail = '\n'.join(diagnostics[-6:])[-2000:]
+            message = f"{args[0]} failed ({failure.get('stage', 'operation')}). No automatic retry was attempted."
+            if args[0] in ('backup', 'snapshot'):
+                message += ' No NAND programming was started. Keep external power connected.'
+            if failure.get('stage') == 'driver':
+                message = 'Windows USB driver setup is required. Open USB driver setup and install libusbK for BE-300 (07CF:2002), then retry.'
+            raise RuntimeError(message + ('\n\n' + detail if detail else ''))
         return events
 
     def device_status(self, stage):
         if self.install_ui:
-            self.run('status', stage, 0, 0)
+            try:
+                self.run('status', stage, 0, 0)
+            except RuntimeError as error:
+                self.emit({'event': 'log', 'text': 'Optional device status update failed: ' + str(error)})
 
     def probe(self):
         events = self.run('probe')
@@ -98,8 +158,16 @@ class Installer:
         self.emit(dict(device, event='device'))
         return device
 
-    def wait_glaze(self, required=0):
+    def wait_glaze(self, required=0, *, programmed=False):
         start = time.monotonic()
+        previous = getattr(self, 'command_deadline', None)
+        self.command_deadline = start + 90
+        try:
+            return self._wait_glaze(required, programmed, start)
+        finally:
+            self.command_deadline = previous
+
+    def _wait_glaze(self, required, programmed, start):
         deadline, reset_at = start + 90, start + 3
         while time.monotonic() < deadline:
             time.sleep(1)
@@ -110,18 +178,24 @@ class Installer:
             if any(e.get('runtime') == 'Glaze' for e in events):
                 caps = next((e['value'] for e in events if e.get('event') == 'capabilities'), 0)
                 if caps & required == required:
+                    expected = getattr(self, 'manifest', {}).get('build_id')
+                    if expected and self.build != expected:
+                        raise RuntimeError(f'Expected build {expected}, detected {self.build}')
+                    self.emit({'event': 'reconnected'})
                     return
                 raise RuntimeError(f'Glaze connected but lacks required USB capabilities (need {required:#x}, got {caps:#x}).')
             if time.monotonic() >= reset_at:
-                self.emit({'event': 'phase', 'text': 'Refreshing the USB connection after GlazeBoot handoff…'})
+                self.emit({'event': 'status', 'text': 'Reconnecting to your BE-300…'})
                 try:
-                    # Match glaze-usb's proven reconnect sequence. The helper
-                    # resets an unclaimed device even if set-configuration fails.
+                    # Windows uses an initialized libusbK interface for a real
+                    # device reset; other platforms retain libusb's bus reset.
                     self.run('reset-link')
                 except RuntimeError:
                     pass  # GlazeBoot can still have USB powered down; retry.
                 reset_at = time.monotonic() + 5
-        raise RuntimeError('Glaze did not reconnect after USB refresh attempts. Unplug and reconnect USB once, then try Install Glaze again. No NAND programming was started by this reconnect step.')
+        recovery = ('NAND programming was verified. Use Check status after reconnecting; do not reinstall.'
+                    if programmed else 'No NAND programming was started. Retry Install Glaze to resume a saved preparation.')
+        raise RuntimeError('Glaze did not reconnect within 90 seconds. Unplug and reconnect USB once at the same port. Keep external power connected. ' + recovery)
 
     def ram_boot(self, mode):
         # ce_test writes its nonce reply beside the payload; bundles are read-only.
@@ -216,6 +290,28 @@ class Installer:
         # Source bytes are needed for bad-block inventory and transaction
         # binding. Without a backup these exist only in an OS temporary folder,
         # which is removed on both success and failure, including partial files.
+        # Only a retained, fully prepared record is resumable. Temporary sources
+        # retain their existing success/failure cleanup semantics.
+        self.verify()
+        device = self.probe()
+        pending = self.pending()
+        if pending and pending['phase'] in ('programming', 'programmed'):
+            raise RuntimeError('A previous installation reached NAND programming. Keep power connected and use Check status or the saved CE backup; automatic programming retry is disabled.')
+        if pending and pending['phase'] == 'prepared' and device['runtime'] == 'Glaze':
+            record = Path(pending['record'])
+            if digest(record) != pending['record_sha256']:
+                raise ValueError('Saved pending installation record differs; refusing to resume.')
+            saved = json.loads(record.read_text(encoding='utf-8'))
+            if saved.get('device') != self.device or saved.get('payload', {}).get('build_id') != self.manifest['build_id']:
+                raise ValueError('Pending installation belongs to a different Glaze build.')
+            chosen = select(load_catalog(self.resources), requested_apps)
+            if saved.get('apps') != chosen or saved.get('verify_wince', True) != verify_wince:
+                raise ValueError('Resume with the same app and verification choices, or return to Windows CE for a new preparation.')
+            if (device.get('capabilities', 0) & (4096 | 32768) != (4096 | 32768)
+                    or self.build != self.manifest['build_id']):
+                raise ValueError('The connected device is not the matching installer repair session.')
+            self.emit({'event': 'backup-saved', 'path': str(record.parent)})
+            return self.apply(record)
         if save_backup:
             destination = Path(destination).expanduser().resolve()
             destination.mkdir(parents=True, exist_ok=True)
@@ -243,9 +339,19 @@ class Installer:
         # Bind the operation to the recorded physical USB port. Moving the device
         # requires reconnecting at that port; source comparison additionally binds bytes.
         self.device = record['device']
-        self.probe()
+        pending = self.pending() if not restore else None
+        if pending and pending['phase'] in ('programming', 'programmed'):
+            raise RuntimeError('Automatic programming retry is disabled after NAND programming has started.')
+        device = self.probe()
+        if not restore:
+            self.save_pending(record_path, 'prepared')
         self.emit({'event': 'status', 'text': 'Getting ready to restore…' if restore else 'Getting ready to install…'})
-        self.ram_boot('repair')
+        caps = device.get('capabilities', 0)
+        reuse = (not restore and isinstance(caps, int) and device.get('runtime') == 'Glaze'
+                 and caps & (4096 | 16384 | 32768) == (4096 | 16384 | 32768)
+                 and self.build == getattr(self, 'manifest', {}).get('build_id'))
+        if not reuse:
+            self.ram_boot('repair')
         source, target, plan = folder / 'original-ce.raw', folder / 'candidate.raw', folder / 'install.bin'
         if restore:
             attempt = Path(tempfile.mkdtemp(prefix='restore-', dir=folder))
@@ -257,7 +363,11 @@ class Installer:
             self.n.write_new(attempt / 'review.json', json.dumps(review, indent=2).encode())
         self.emit({'event': 'programming', 'text': ('Restoring Windows CE…' if restore else 'Installing Glaze…') + ' Keep power and USB connected.'})
         self.device_status(3)
+        if not restore:
+            self.save_pending(record_path, 'programming')
         self.run('apply', source, target, plan)
+        if not restore:
+            self.save_pending(record_path, 'programmed')
         self.emit({'event': 'verified', 'text': 'Whole-device programming verification passed.'})
         self.emit({'event': 'status', 'text': 'Restarting your BE-300…'})
         self.device_status(6)
@@ -275,12 +385,13 @@ class Installer:
             raise RuntimeError('CE bytes were restored and verified, but CE USB was not detected after reboot.')
         expected = self.manifest['build_id']
         try:
-            self.wait_glaze()
+            self.wait_glaze(programmed=True)
             if self.build != expected:
                 raise RuntimeError(f'Expected build {expected}, detected {self.build}')
         except RuntimeError as error:
             raise RuntimeError('NAND programming verified; boot verification incomplete. ' + str(error)) from error
         self.emit({'event': 'success', 'text': 'Glaze is installed. You can disconnect USB.'})
+        self.pending_path().unlink(missing_ok=True)
 
     @contextmanager
     def maintenance_session(self):

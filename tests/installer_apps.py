@@ -16,6 +16,16 @@ CATALOG = [
 
 
 class AppSelectionTest(unittest.TestCase):
+    def test_shared_builtin_catalog_keeps_required_apps(self):
+        from package import builtin_catalog
+        logical = bytearray(b'\xff' * (16*1024*1024))
+        blob = archive({'bin/files': b'files', 'bin/settings': b'settings', 'bin/calculator': b'calculator'})
+        logical[0x40000:0x40000+len(blob)] = blob
+        struct.pack_into('<I', logical, 4*16+12, len(blob)//512)
+        catalog = builtin_catalog(logical)
+        self.assertEqual(select(catalog, []), ['builtin:files', 'builtin:settings'])
+        self.assertEqual(select(catalog), ['builtin:calculator', 'builtin:files', 'builtin:settings'])
+
     def test_defaults_and_required_apps(self):
         self.assertEqual(select(CATALOG), ['builtin:calculator', 'builtin:files'])
         self.assertEqual(select(CATALOG, []), ['builtin:files'])

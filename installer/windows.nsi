@@ -26,7 +26,7 @@ Section "Glaze Installer"
   SetOutPath "$INSTDIR"
   ; Remove the obsolete bundled Hello payload when upgrading an older setup.
   Delete "$INSTDIR\resources\packages\hello.gzp"
-  File /r "${PRODUCT_DIR}/*"
+  File /r "${PRODUCT_DIR}\*"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   CreateShortcut "$SMPROGRAMS\Glaze BE-300 Installer.lnk" "$INSTDIR\Glaze Installer.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GlazeInstaller" "DisplayName" "Glaze BE-300 Installer"

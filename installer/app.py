@@ -308,7 +308,7 @@ def main():
                 manifest = json.loads((args.resources / 'manifest.json').read_text())
                 if digest(path) != manifest['files'].get('drivers/zadig-2.9.exe'):
                     raise ValueError('USB driver setup failed verification')
-                messagebox.showinfo('USB driver setup', 'In Zadig, choose Options → List All Devices. Select the BE-300 (07CF:2002), then install WinUSB. Close Zadig when finished. This replaces the old CE sync driver.')
+                messagebox.showinfo('USB driver setup', 'In Zadig, choose Options → List All Devices. Select only USB ID 07CF:2002 (BE-300 or Unknown Device #1, Casio), then choose libusbK and install it. Close Zadig when finished. This enables automatic USB recovery and replaces the old CE sync or WinUSB driver.')
                 os.startfile(path)
             except Exception as error:
                 messagebox.showerror('USB driver setup', str(error))
@@ -341,7 +341,9 @@ def main():
                 status.set(f"Running Glaze {event['version'] or 'an older OS'}; bundled {event['bundled']}. " + ('Signed OS updates supported.' if event['flags'] & 1 else 'OS/SPL cannot install signed updates.') + outcome)
             if kind == 'backup-saved':
                 state['backup'] = event['path']
-            if kind in ('status', 'programming'):
+            if kind in ('status', 'programming', 'reconnected'):
+                if kind == 'reconnected':
+                    text = 'BE-300 reconnected. Continuing…'
                 status.set(text)
                 progress.stop()
                 progress.configure(mode='indeterminate')
@@ -370,7 +372,9 @@ def main():
                                          ('apply', 'Installation stopped. Keep USB connected and open Details.')]:
                     if text.startswith(command + ' failed.'):
                         friendly = message
-                status.set('Connect your BE-300 to continue.' if state['operation'] == 'probe' else friendly)
+                status.set('Connect your BE-300 to continue.'
+                           if state['operation'] == 'probe' and not text.startswith('Windows USB driver setup is required.')
+                           else friendly)
             if kind == 'worker-done':
                 state['busy'] = False
                 progress.stop()

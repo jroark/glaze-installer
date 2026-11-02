@@ -10,6 +10,11 @@ One offline download per platform:
 No CF card, system Python, build tools, separate firmware or additional runtime
 download is needed. The app makes no network requests. The Windows USB driver
 setup is guided and uses the bundled Zadig; it may request administrator access.
+On Windows select **libusbK**, including when upgrading an existing WinUSB binding.
+In Zadig enable **Options → List All Devices** and select USB ID **07CF:2002**;
+the BE-300 may be named **Unknown Device #1** from Casio. Connect one BE-300 at a
+time. libusbK provides the real port reset needed after RAM restarts; WinUSB only
+resets pipes and is rejected before installation begins.
 
 ## End-user flow
 
@@ -56,6 +61,12 @@ Existing GlazeBoot staging files are compared and reused when matching. Only
 missing/changed files require additional CE staging space, and previous files
 stay intact until verified replacement. The matching read-only Glaze RAM session
 can be reused after a failed attempt without rebooting CE.
+After preparation, the installer saves a record of the pending operation. A failed
+handoff can resume the matching installer RAM session with the same app choices.
+NAND capture retries only failed read ranges, at most three times, after checking
+the reconnected port and Glaze build. Erases, programming and reboot commands are
+never replayed automatically. If programming has started, use Check status or the
+saved CE backup instead of starting another installation.
 
 Save important CE RAM files beforehand: RAM bootstrap clears CE's volatile object
 store. Installation replaces CE and its internal files. Keep complete saved backup
@@ -159,6 +170,27 @@ the GUI; workers run using the bundled console interpreter with a hidden window.
 
 Downloaded libusb/libwdi redistribution sources and licenses are bundled.
 Windows native helpers use system crypto APIs; no wolfSSL runtime is needed.
+
+On Windows, a verified installed bundle can supply the matching signed OS,
+firmware, catalog and private Python/Tk runtime without rebuilding the MIPS images:
+
+```powershell
+$env:GLAZE_WIN_CC = 'C:\build-tools\mingw64\bin\gcc.exe'
+$env:GLAZE_WIN_WINDRES = 'C:\build-tools\mingw64\bin\windres.exe'
+$env:GLAZE_7ZIP = 'C:\build-tools\7zr.exe'
+$env:GLAZE_MAKENSIS = 'C:\build-tools\NSIS\makensis.exe'
+$env:OPENSSL = 'C:\Program Files\Git\usr\bin\openssl.exe'
+python installer/package_windows.py --existing-bundle "$env:LOCALAPPDATA\Programs\Glaze Installer"
+```
+
+Resource hashes, release signature and the signed image contents are checked
+before reuse. Host helpers and application code are rebuilt from the checkouts.
+libusbK 3.1.0.0 runtime/source archives are pinned in `windows-downloads.json`;
+the x64 DLL, source and license notices are included in the offline package.
+`tests/usb_host_windows.py` runs native fixtures without touching USB hardware.
+`tests/hardware_ram.py --bundle PATH --output PATH --cycles 3` is an explicit
+device test that stages boot files and restarts RAM sessions without programming
+raw NAND. Keep external power connected during hardware validation.
 
 ## Collect and verify
 
