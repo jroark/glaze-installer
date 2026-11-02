@@ -14,6 +14,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from app_selection import load_catalog, select, customize_logical, install_packages, entries, archive
+from system_image import prepare_system
 
 RAW_SIZE = 17301504
 
@@ -158,16 +159,16 @@ class Installer:
         self.emit(dict(device, event='device'))
         return device
 
-    def wait_glaze(self, required=0, *, programmed=False):
+    def wait_glaze(self, required=0, *, programmed=False, nand_boot=False):
         start = time.monotonic()
         previous = getattr(self, 'command_deadline', None)
         self.command_deadline = start + 90
         try:
-            return self._wait_glaze(required, programmed, start)
+            return self._wait_glaze(required, programmed, start, nand_boot)
         finally:
             self.command_deadline = previous
 
-    def _wait_glaze(self, required, programmed, start):
+    def _wait_glaze(self, required, programmed, start, nand_boot):
         deadline, reset_at = start + 90, start + 3
         while time.monotonic() < deadline:
             time.sleep(1)
@@ -177,6 +178,8 @@ class Installer:
                 events = []
             if any(e.get('runtime') == 'Glaze' for e in events):
                 caps = next((e['value'] for e in events if e.get('event') == 'capabilities'), 0)
+                if nand_boot and caps & (16384 | 32768):
+                    continue  # The old repair session is still shutting down.
                 if caps & required == required:
                     expected = getattr(self, 'manifest', {}).get('build_id')
                     if expected and self.build != expected:
@@ -385,7 +388,7 @@ class Installer:
             raise RuntimeError('CE bytes were restored and verified, but CE USB was not detected after reboot.')
         expected = self.manifest['build_id']
         try:
-            self.wait_glaze(programmed=True)
+            self.wait_glaze(programmed=True, nand_boot=True)
             if self.build != expected:
                 raise RuntimeError(f'Expected build {expected}, detected {self.build}')
         except RuntimeError as error:
@@ -475,6 +478,99 @@ class Installer:
         if failures:
             raise RuntimeError('Some apps were not installed. ' + '; '.join(failures))
         self.emit({'event': 'success', 'text': 'Selected apps are installed. Existing app data was preserved.'})
+
+    def uninstall_apps(self, requested):
+        catalog = load_catalog(self.resources)
+        chosen = select(catalog, requested)
+        apps = [a for a in catalog if a['kind'] == 'package' and a['id'] in chosen]
+        if not apps:
+            raise ValueError('Select additional apps to uninstall.')
+        with self.maintenance_session():
+            info = self.maintenance_request('info')
+            if info.get('protocol', 0) < 2:
+                raise ValueError('The bundled maintenance companion does not support uninstalling apps.')
+            for app in apps:
+                # IDs come only from the verified catalog, never from a path.
+                program = app['program']
+                if not re.fullmatch(r'[a-z0-9.-]{1,24}', program):
+                    raise ValueError('Invalid package ID in the app catalog')
+                if program not in info.get('apps', {}):
+                    continue
+                self.emit({'event': 'status', 'text': 'Removing ' + app['name'] + '…'})
+                # A lost reply is uncertain: stop without sending another mutation.
+                self.maintenance_request('uninstall:' + program)
+            info = self.maintenance_request('info')
+            self.emit(dict(info, event='maintenance-info', bundled=self.manifest['os']['version']))
+            remaining = [a['name'] for a in apps if a['program'] in info.get('apps', {})]
+            if remaining:
+                raise RuntimeError('These apps are still installed: ' + ', '.join(remaining) + '. Check status before another removal.')
+        self.emit({'event': 'success', 'text': 'Selected additional apps and their saved app data were removed.'})
+
+    def configure_system(self, requested, destination):
+        self.verify()
+        catalog = load_catalog(self.resources)
+        chosen = select(catalog, requested)
+        # Capacity and required-app checks happen before touching the device.
+        customize_logical((self.resources / 'glaze.bin').read_bytes(), catalog, chosen, self.resources)
+        self.probe()
+        if self.build != self.manifest['build_id']:
+            raise ValueError('Built-in apps and hardware need an installer matching the running OS build.')
+        marker = self.state_dir / ('system-' + hashlib.sha256(self.device.encode()).hexdigest()[:16] + '.json')
+        if marker.exists():
+            previous = json.loads(marker.read_text(encoding='utf-8'))
+            if previous.get('phase') != 'prepared':
+                raise ValueError('A previous system change reached NAND programming. Do not retry. Keep power connected and recover using ' + previous.get('record', str(marker)))
+        with self.maintenance_session():
+            info = self.maintenance_request('info')
+            if info.get('protocol', 0) < 2:
+                raise ValueError('The bundled maintenance companion is too old.')
+            if not info.get('power_flags', 0) & 2:
+                raise ValueError('Connect external power before changing built-in apps or WL54-CF support.')
+        destination = Path(destination).expanduser().resolve()
+        destination.mkdir(parents=True, exist_ok=True)
+        if shutil.disk_usage(destination).free < 128 * 1024 * 1024:
+            raise ValueError('At least 128 MiB of free backup space is required.')
+        folder = Path(tempfile.mkdtemp(prefix='Glaze-System-', dir=destination))
+        self.emit({'event': 'folder', 'path': str(folder)})
+        self.ram_boot('repair')
+        source = folder / 'before.raw'
+        self.emit({'event': 'status', 'text': 'Saving and checking the current Glaze installation…'})
+        self.run('backup', source)
+        self.emit({'event': 'backup-saved', 'path': str(folder), 'text': 'Checked Glaze backup saved.'})
+        self.n.native(['--check-boot', source])
+        target, plan, review = prepare_system(source.read_bytes(), (self.resources / 'glaze.bin').read_bytes(),
+                                             catalog, chosen, self.resources, self.n.encode)
+        self.n.write_new(folder / 'after.raw', target)
+        self.n.native(['--check-boot', folder / 'after.raw'])
+        self.n.write_new(folder / 'system.bin', plan)
+        self.n.write_new(folder / 'review.json', json.dumps(review, indent=2).encode())
+        record = folder / 'system.json'
+        files = ['before.raw', 'after.raw', 'system.bin', 'review.json']
+        self.n.write_new(record, json.dumps({'version': 1, 'device': self.device, 'build': self.build,
+                        'files': {f: digest(folder / f) for f in files}}, indent=2).encode())
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        def save(phase):
+            temporary = marker.with_suffix('.' + uuid.uuid4().hex + '.tmp')
+            try:
+                with temporary.open('x', encoding='utf-8') as stream:
+                    json.dump({'version': 1, 'phase': phase, 'record': str(record), 'sha256': digest(record)}, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, marker)
+            finally:
+                temporary.unlink(missing_ok=True)
+        save('prepared')
+        if review['write_order']:
+            save('programming')
+            self.emit({'event': 'programming', 'text': 'Applying built-in apps and hardware choices. Keep power and USB connected.'})
+            # The production writer compares the entire saved source before the
+            # first erase, and verifies every byte, including the retained FS.
+            self.run('apply', source, folder / 'after.raw', folder / 'system.bin')
+            save('programmed')
+        self.run('cold-reboot')
+        self.wait_glaze(programmed=True, nand_boot=True)
+        marker.unlink(missing_ok=True)
+        self.emit({'event': 'success', 'text': 'Built-in apps and hardware choices applied. Files, settings and app data were preserved.'})
 
     def update_os(self):
         expected = None

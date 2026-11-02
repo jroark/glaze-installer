@@ -86,19 +86,42 @@ and asks the user to deselect Windows CE compatibility or another optional app.
 ## Maintaining an existing Glaze installation
 
 Connect the BE-300 while Glaze is running. The installer shows the running and
-bundled OS versions and offers **Update Glaze OS**, **Install apps**, and
-**Check status**. No network connection or local file selection is needed.
+bundled OS versions and offers **Manage apps & hardware**, **Install apps**,
+**Uninstall selected apps**, **Apply built-ins & hardware**, **Update Glaze OS**,
+and **Check status**. Wake/unlock Glaze before starting maintenance. No network
+connection or local file selection is needed.
 
-The app chooser lists optional packages. New apps install on Flash; replacements
+The chooser has Built-in apps, Additional apps, and Optional hardware tabs. It
+loads current built-in and WL54-CF selections from the device. Files and Settings
+are required; services and shared libraries cannot be selected for removal.
+
+For additional apps, select the targets and choose Install or Uninstall. New apps install on Flash; replacements
 retain their existing Flash/Card location and saved data. Equal or newer versions
 are skipped. Unchecked apps remain installed. If an app fails, completed installs
-remain in place and the installer lists the failures.
+remain in place and the installer lists the failures. Uninstall requires an
+explicit confirmation listing the selected apps and removes their saved app data.
+A lost uninstall reply stops the batch without replaying the request.
+
+For built-in apps and WL54-CF support, check what should remain installed, then
+choose **Apply built-ins & hardware**. This requires the exact matching OS build
+and external power. The installer boots its repair RAM session, saves and compares
+two complete Glaze NAND reads, verifies the existing boot/kernel/ROMFS against the
+bundled release, and changes only selected ROMFS content and its partition length.
+The existing tagged block mapping, quarantine, file system (including spare
+bytes), settings, and saved built-in app data are retained. The production writer
+rechecks the entire source before erasing and verifies the whole target afterward.
+The checked `before.raw`, `after.raw`, transaction and hash record are retained in
+`Documents/Glaze Backups/Glaze-System-*`. An uncertain programming phase blocks
+another attempt and identifies its saved recovery record. No factory CE backup
+or signing key is needed for these same-build choices. This action cannot upgrade
+an OS or repair damaged ECC/ambiguous boot mappings.
 
 OS updates use the bundled standard signed release, including that release's
 built-in apps and firmware. Fresh-install customization does not carry into this
 signed image. Updates preserve the filesystem, require an OTA-capable OS/SPL,
 enough free Flash space, and AC power or a valid battery reading of at least 50%.
-Older unsupported devices get an explanation; maintenance never reflashes them.
+Older unsupported devices get an explanation. Signed updates and same-build
+ROMFS customization are separate actions.
 Keep power connected while the SPL installs the update, which can take minutes.
 Success requires reconnecting and confirming the expected OS build and SPL result.
 If boot verification times out, use **Check status**; no automatic rearming occurs.
@@ -180,11 +203,22 @@ $env:GLAZE_WIN_WINDRES = 'C:\build-tools\mingw64\bin\windres.exe'
 $env:GLAZE_7ZIP = 'C:\build-tools\7zr.exe'
 $env:GLAZE_MAKENSIS = 'C:\build-tools\NSIS\makensis.exe'
 $env:OPENSSL = 'C:\Program Files\Git\usr\bin\openssl.exe'
-python installer/package_windows.py --existing-bundle "$env:LOCALAPPDATA\Programs\Glaze Installer"
+python installer/build_maintenance.py --existing-bundle "$env:LOCALAPPDATA\Programs\Glaze Installer" --output-dir out/maintenance-build
+python installer/package_windows.py --existing-bundle "$env:LOCALAPPDATA\Programs\Glaze Installer" --maintenance-package out/maintenance-build/maintenance.gzp
 ```
 
 Resource hashes, release signature and the signed image contents are checked
 before reuse. Host helpers and application code are rebuilt from the checkouts.
+The protocol-2 maintenance package must also be rebuilt; stale protocol-1 packages
+are rejected. `build_maintenance.py` normally uses GNU `mipsel-linux-gnu-*` tools.
+On Windows it also accepts `--zig PATH/zig.exe --linker PATH/ld.lld.exe`. It compiles
+only the companion against the verified bundle's shared libraries; signed OS and
+RAM firmware stay unchanged. The tested portable tools were Zig 0.13.0 (official
+Windows x64 archive SHA-256
+`d859994725ef9402381e557c60bb57497215682e355204d754ee3df75ee3c158`)
+and llvm-mingw 20261020 (official UCRT x64 archive SHA-256
+`fd5462b7f5d93b2ff981fcd3f9c7e427e47f3203c64ea91c27bcc444eebd74cd`).
+Keep portable tools and caches under ignored `out/` directories.
 libusbK 3.1.0.0 runtime/source archives are pinned in `windows-downloads.json`;
 the x64 DLL, source and license notices are included in the offline package.
 `tests/usb_host_windows.py` runs native fixtures without touching USB hardware.
@@ -199,6 +233,8 @@ python3 installer/collect_downloads.py
 python3 tests/installer.py
 python3 tests/installer_apps.py
 python3 tests/installer_maintenance.py
+python3 tests/installer_system.py
+python3 tests/installer_system_flow.py
 # in glaze-os, which owns the maintenance package, NAND tools and USB client:
 python3 tests/maintenance_native.py
 python3 tests/physical_nand.py

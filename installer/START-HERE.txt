@@ -36,7 +36,16 @@ These are development builds. See installer/VALIDATION.md in the source checkout
 for the recorded Windows and hardware validation results.
 
 ALREADY RUNNING GLAZE?
-Connect USB and power, then use Update Glaze OS or Install apps. Updates use the
-standard signed OS bundled here. Existing apps and saved data are preserved.
+Wake/unlock Glaze, connect USB and power, then open Manage apps & hardware.
+Additional apps: select targets, then Install apps or Uninstall selected apps.
+Uninstall removes the selected app's saved data after confirmation. Unchecked
+additional apps stay installed; installing updates preserves their saved data.
+Built-in apps and Optional hardware: check what to keep, then Apply built-ins &
+hardware. Files, Settings and system services are protected. WL54-CF support
+includes the offline Marvell firmware pair and its license notice. Applying
+these choices requires a matching OS build and external power, saves a checked
+Glaze backup, retains files/settings/app data, and restarts the BE-300.
+Update Glaze OS installs the standard signed OS bundled here, including its
+standard built-in apps and firmware choices. Apps and saved data are preserved.
 Keep power connected during the minutes-long OS installation. If boot verification
 is incomplete, reconnect and choose Check status before retrying.

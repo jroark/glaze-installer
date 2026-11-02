@@ -2,7 +2,8 @@
 
 The offline desktop installer (macOS and Windows) that puts
 [Glaze](https://github.com/jroark/glaze-os) on a Casio BE-300's NAND over USB,
-restores it, installs OS updates and adds apps. It needs no network access.
+restores it, installs OS updates, manages built-in and additional apps, and adds
+WL54-CF Wi-Fi support. It needs no network access.
 
 The installer's guide is [installer/README.md](installer/README.md), and its
 hardware checklist is [installer/VALIDATION.md](installer/VALIDATION.md).
@@ -22,6 +23,7 @@ glaze-os sources, read from sibling checkouts:
 cmake -S installer -B out/installer-native -DCMAKE_BUILD_TYPE=Release   # -DGLAZE_DIR=... to override
 cmake --build out/installer-native -j8
 python3 tests/installer.py && python3 tests/installer_apps.py && python3 tests/installer_maintenance.py
+python3 tests/installer_system.py && python3 tests/installer_system_flow.py
 ```
 
 Finished installers go to the website through glaze-web's `site/downloads`.

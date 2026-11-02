@@ -10,7 +10,7 @@ import threading
 import traceback
 
 from engine import Installer, digest
-from app_selection import load_catalog, select, customize_logical
+from app_selection import load_catalog, select, customize_logical, entries
 
 
 def main():
@@ -25,7 +25,7 @@ def main():
         default_resources = Path(sys.executable).resolve().parents[1] / 'Resources/resources'
     parser = argparse.ArgumentParser()
     parser.add_argument('--resources', type=Path, default=default_resources)
-    parser.add_argument('--worker', choices=['probe', 'prepare', 'install', 'restore', 'install-device', 'maintenance-info', 'install-apps', 'update-os'])
+    parser.add_argument('--worker', choices=['probe', 'prepare', 'install', 'restore', 'install-device', 'maintenance-info', 'install-apps', 'uninstall-apps', 'configure-system', 'update-os'])
     parser.add_argument('--argument', default='')
     parser.add_argument('--skip-backup', action='store_true')
     parser.add_argument('--skip-wince-verification', action='store_true')
@@ -34,11 +34,16 @@ def main():
     parser.add_argument('--device', default='auto')
     parser.add_argument('--smoke-maintenance', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--smoke-test', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--smoke-seconds', type=float, default=0.5, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.check_bundle:
         installer = Installer(args.resources, lambda e: None)
         installer.verify()
         catalog = load_catalog(args.resources)
+        companion = entries((args.resources / 'maintenance.gzp').read_bytes(), b'GZPK')
+        metadata = dict(line.split('=', 1) for line in companion.get('Info', b'').decode().splitlines() if '=' in line)
+        if metadata.get('id') != 'maintenance' or metadata.get('installer-protocol') != '2':
+            raise RuntimeError('Bundled companion lacks app and hardware management support')
         if len(installer.n.encode([bytes(520)])) != 528:
             raise RuntimeError('Bundled inventory helper failed')
         for name in ('glaze-installer-usb', 'nand-inventory', 'mkfsimg'):
@@ -59,6 +64,10 @@ def main():
                 installer.maintenance_info()
             elif args.worker == 'install-apps':
                 installer.install_apps(json.loads(args.apps) if args.apps else [])
+            elif args.worker == 'uninstall-apps':
+                installer.uninstall_apps(json.loads(args.apps) if args.apps else [])
+            elif args.worker == 'configure-system':
+                installer.configure_system(json.loads(args.apps) if args.apps else [], args.argument)
             elif args.worker == 'update-os':
                 installer.update_os()
             elif args.worker == 'install-device':
@@ -100,7 +109,7 @@ def main():
     consequence = tk.StringVar()
     events = queue.Queue()
     state = {'busy': False, 'confirming': False, 'operation': None, 'done': False, 'details': False,
-             'last_error': None, 'backup': None, 'maintenance': False}
+             'last_error': None, 'backup': None, 'maintenance': False, 'inventory': None, 'choices_loaded': False}
     controls = []
     if args.smoke_test:
         log_folder = Path(tempfile.mkdtemp(prefix='glaze-ui-smoke-'))
@@ -111,27 +120,32 @@ def main():
     log_path = log_folder / ('session-' + __import__('datetime').datetime.now().strftime('%Y%m%d-%H%M%S') + '.jsonl')
 
     def selected_app_count():
-        return sum(a['id'] in selected for a in catalog if a['kind'] == 'package' or (not state['maintenance'] and a['kind'] == 'builtin'))
+        return sum(a['id'] in selected for a in catalog if a['kind'] in ('package', 'builtin'))
+
+    def choices_label():
+        return ('Manage apps & hardware…' if state['maintenance'] else 'Choose apps…') + f' ({selected_app_count()} apps)'
 
     def choose_apps():
         window = tk.Toplevel(root)
-        window.title('Choose apps')
+        window.title('Manage apps & hardware' if state['maintenance'] else 'Choose apps')
         window.transient(root)
         window.grab_set()
         panel = ttk.Frame(window, padding=18)
         panel.pack(fill='both', expand=True)
-        ttk.Label(panel, text='Unchecked apps stay installed.' if state['maintenance'] else 'Files and Settings are always included.').pack(anchor='w', pady=8)
+        ttk.Label(panel, wraplength=650, text=('Built-in apps and hardware: check what to keep, then Apply built-ins & hardware.\nAdditional apps: select targets, then Install or Uninstall. Unchecked additional apps stay installed.\nFiles and Settings are always included.' if state['maintenance'] else 'Files and Settings are always included.')).pack(anchor='w', pady=8)
         variables = {}
+        tabs = ttk.Notebook(panel)
+        tabs.pack(fill='both', expand=True, pady=5)
         for kind, title in [('builtin', 'Built-in apps'), ('package', 'Additional apps'), ('firmware', 'Optional hardware')]:
-            if state['maintenance'] and kind != 'package':
-                continue
-            group = ttk.LabelFrame(panel, text=title, padding=10)
-            group.pack(fill='x', pady=5)
+            group = ttk.Frame(tabs, padding=10)
+            tabs.add(group, text=title)
             for index, app in enumerate(a for a in catalog if a['kind'] == kind):
                 variable = tk.BooleanVar(value=app['id'] in selected)
                 variables[app['id']] = variable
-                button = ttk.Checkbutton(group, text=app['name'], variable=variable)
-                button.grid(row=index // 3, column=index % 3, sticky='w', padx=8, pady=3)
+                installed = (state['inventory'] or {}).get('apps', {}).get(app['program']) if app['kind'] == 'package' else None
+                label = app['name'] + (f' (installed {installed})' if installed else '')
+                button = ttk.Checkbutton(group, text=label, variable=variable)
+                button.grid(row=index // 2, column=index % 2, sticky='w', padx=8, pady=3)
                 if app.get('required'):
                     button.configure(state='disabled')
         row = ttk.Frame(panel)
@@ -145,19 +159,18 @@ def main():
         def save():
             chosen = select(catalog, [key for key, value in variables.items() if value.get()])
             try:
-                if not state['maintenance']:
-                    customize_logical((args.resources / 'glaze.bin').read_bytes(), catalog, chosen, args.resources)
+                customize_logical((args.resources / 'glaze.bin').read_bytes(), catalog, chosen, args.resources)
             except ValueError as error:
                 messagebox.showerror('Choose fewer options', str(error), parent=window)
                 return
             selected.clear()
             selected.update(chosen)
-            apps_button.configure(text=f'Choose apps… ({selected_app_count()} selected)')
+            apps_button.configure(text=choices_label())
             window.destroy()
         ttk.Button(row, text='Select all', command=lambda: preset(True)).pack(side='left')
         ttk.Button(row, text='Required only', command=lambda: preset(False)).pack(side='left', padx=8)
         ttk.Button(row, text='Done', command=save).pack(side='right')
-    apps_button = ttk.Button(frame, text=f'Choose apps… ({selected_app_count()} selected)', command=choose_apps)
+    apps_button = ttk.Button(frame, text=choices_label(), command=choose_apps)
     apps_button.pack(anchor='w', pady=(0, 14))
     controls.append(apps_button)
     options = ttk.Frame(frame)
@@ -245,21 +258,49 @@ def main():
     update_button = ttk.Button(actions, text='Update Glaze OS…', command=update_os)
     check_button = ttk.Button(actions, text='Check status', command=lambda: launch('maintenance-info'))
     controls += [update_button, check_button]
+    maintenance_actions = ttk.Frame(frame)
+    def uninstall_apps():
+        names = [a['name'] for a in catalog if a['kind'] == 'package' and a['id'] in selected]
+        if not names:
+            messagebox.showinfo('Uninstall apps', 'Select additional apps in Manage apps & hardware first.')
+            return
+        if messagebox.askyesno('Uninstall selected apps?', 'Remove these additional apps and their saved app data?\n\n' + ', '.join(names)):
+            launch('uninstall-apps')
+    def configure_system():
+        if not state['choices_loaded']:
+            messagebox.showinfo('Check status first', 'Unlock the BE-300 and check status to load its current built-in apps and hardware choices.')
+            return
+        names = [a['name'] for a in catalog if a['kind'] in ('builtin', 'firmware') and a['id'] not in selected]
+        message = ('Apply the selected built-in apps and hardware support, and restart the BE-300?\n\n'
+                   'Not included: ' + ', '.join(names) + '\n\nFiles, settings and saved data are preserved. A checked Glaze backup will be saved. Keep external power connected.')
+        if messagebox.askyesno('Apply built-in apps & hardware?', message):
+            launch('configure-system', backup_folder.get())
+    configure_button = ttk.Button(maintenance_actions, text='Apply built-ins & hardware…', command=configure_system)
+    configure_button.pack(side='left')
+    uninstall_button = ttk.Button(maintenance_actions, text='Uninstall selected apps…', command=uninstall_apps)
+    uninstall_button.pack(side='right')
+    controls += [configure_button, uninstall_button]
     def maintenance_mode(enabled):
+        nonlocal base_height
         state['maintenance'] = enabled
         state['done'] = False
         install_button.configure(text='Install apps' if enabled else 'Install Glaze')
-        apps_button.configure(text=f'Choose apps… ({selected_app_count()} selected)')
+        apps_button.configure(text=choices_label())
         for widget in (backup_check, folder_button, verify_check):
             widget.grid_remove() if enabled else widget.grid()
         if enabled:
-            consequence.set('OS updates use the bundled standard image. Unchecked apps stay installed.')
+            consequence.set('Install or uninstall additional apps, or apply built-in apps and WL54-CF support. OS updates use the standard release image.')
             update_button.pack(side='right', padx=6)
             check_button.pack(side='left', padx=6)
+            maintenance_actions.pack(before=actions, fill='x', pady=(12, 0))
         else:
             update_button.pack_forget()
             check_button.pack_forget()
+            maintenance_actions.pack_forget()
             backup_changed()
+        root.update_idletasks()
+        base_height = max(450, frame.winfo_reqheight() + 10)
+        root.geometry(f'620x{base_height + (220 if state["details"] else 0)}')
 
     def restore():
         state['confirming'] = True
@@ -337,6 +378,19 @@ def main():
                 status.set('Glaze connected. Check status to see the running and bundled releases.' if state['maintenance'] else 'BE-300 connected. Ready to install.')
             if kind == 'maintenance-info':
                 maintenance_mode(True)
+                state['inventory'] = event
+                if not state['choices_loaded'] and event.get('protocol', 0) >= 2 and isinstance(event.get('builtins'), list):
+                    for app in catalog:
+                        if app['kind'] == 'builtin':
+                            selected.discard(app['id'])
+                            if app['program'] in event['builtins'] or app.get('required'):
+                                selected.add(app['id'])
+                        elif app['kind'] == 'firmware':
+                            selected.discard(app['id'])
+                            if app['program'] == 'wl54cf' and event.get('wl54cf'):
+                                selected.add(app['id'])
+                    state['choices_loaded'] = True
+                    apps_button.configure(text=choices_label())
                 outcome = {1: ' Last OS update applied.', 2: ' Last OS update was rejected.'}.get(event['last_result'], '')
                 status.set(f"Running Glaze {event['version'] or 'an older OS'}; bundled {event['bundled']}. " + ('Signed OS updates supported.' if event['flags'] & 1 else 'OS/SPL cannot install signed updates.') + outcome)
             if kind == 'backup-saved':
@@ -410,15 +464,28 @@ def main():
     root.minsize(600, base_height)
     root.geometry(f'620x{base_height}')
     poll()
+    smoke_failed = False
     if args.smoke_test:
         if args.smoke_maintenance:
             maintenance_mode(True)
         root.after(50, choose_apps)
-        root.after(500, root.destroy)
+        def check_smoke_layout():
+            nonlocal smoke_failed
+            for window in [root, *[w for w in root.winfo_children() if isinstance(w, tk.Toplevel)]]:
+                window.update_idletasks()
+                fits = (window.winfo_reqwidth() <= window.winfo_screenwidth() and
+                        window.winfo_reqheight() <= window.winfo_screenheight() and
+                        window.winfo_width() >= window.winfo_reqwidth() and
+                        window.winfo_height() >= window.winfo_reqheight())
+                smoke_failed |= not fits
+                print(json.dumps({'event': 'smoke-layout', 'window': window.title(), 'fits': fits,
+                                  'width': window.winfo_reqwidth(), 'height': window.winfo_reqheight()}), flush=True)
+        root.after(150, check_smoke_layout)
+        root.after(int(max(0.5, min(args.smoke_seconds, 60)) * 1000), root.destroy)
     else:
         root.after(300, auto_detect)
     root.mainloop()
-    return 0
+    return 1 if smoke_failed else 0
 
 
 if __name__ == '__main__':

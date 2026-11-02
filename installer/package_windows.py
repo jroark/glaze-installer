@@ -15,7 +15,7 @@ import urllib.request
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from package import GLAZE, ROOT, stage_resources, validate_update, builtin_catalog
+from package import GLAZE, ROOT, stage_resources, validate_update, builtin_catalog, validate_maintenance
 
 
 def run(*command):
@@ -57,6 +57,7 @@ def main():
     parser.add_argument('--os-update', type=Path)
     parser.add_argument('--build-id')
     parser.add_argument('--existing-bundle', type=Path, help='Reuse verified firmware and runtime from a matching installer folder')
+    parser.add_argument('--maintenance-package', type=Path, help='Rebuilt protocol-2 device companion (.gzp)')
     parser.add_argument('--output-dir', type=Path, default=ROOT / 'out/installer-windows')
     args = parser.parse_args()
     cache = ROOT / 'out/installer-downloads'
@@ -65,6 +66,7 @@ def main():
         if args.build_id and args.build_id != existing[1]['build_id']:
             parser.error('--build-id differs from existing bundle')
         args.build_id = existing[1]['build_id']
+        validate_maintenance(args.maintenance_package or existing[0] / 'maintenance.gzp')
     elif not args.build_id or not args.os_update:
         parser.error('--build-id and --os-update are required without --existing-bundle')
     download_dependencies(cache, {'libusb-1.0.30.7z', 'libusbK-3.1.0.0-bin.7z', 'libusbK-3.1.0.0-src.7z'} if existing else None)
@@ -128,6 +130,9 @@ def main():
             shutil.copy2(native / name, resources / 'bin')
     else:
         resources = stage_resources(product, native, args.build_id, '.exe', args.os_update)
+    if args.maintenance_package:
+        validate_maintenance(args.maintenance_package)
+        shutil.copy2(args.maintenance_package, resources / 'maintenance.gzp')
     shutil.copy2(libusb / 'MinGW64/dll/libusb-1.0.dll', resources / 'bin')
     shutil.copy2(libusbk / 'bin/dll/amd64/libusbK.dll', resources / 'bin')
     (resources / 'drivers').mkdir(exist_ok=True)
@@ -146,6 +151,7 @@ def main():
                 continue
             manifest['files'][path.relative_to(resources).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
     manifest['files']['apps.json'] = hashlib.sha256((resources / 'apps.json').read_bytes()).hexdigest()
+    manifest['files']['maintenance.gzp'] = hashlib.sha256((resources / 'maintenance.gzp').read_bytes()).hexdigest()
     manifest_path.write_text(json.dumps(manifest, indent=2))
     runtime = product / 'runtime'
     if existing:
@@ -159,7 +165,7 @@ def main():
     (runtime / 'python311._pth').write_text('python311.zip\n.\nDLLs\nLib\n../app\n')
     app = product / 'app'
     app.mkdir()
-    for name in ('app.py', 'engine.py', 'app_selection.py'):
+    for name in ('app.py', 'engine.py', 'app_selection.py', 'system_image.py'):
         shutil.copy2(ROOT / 'installer' / name, app)
     run(cc, '-O2', '-static', '-municode', '-mwindows', ROOT / 'installer/windows-launcher.c', resource,
         '-o', product / 'Glaze Installer.exe')
