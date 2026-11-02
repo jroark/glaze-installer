@@ -12,10 +12,25 @@ import sys
 import struct
 import tempfile
 import zlib
+from app_selection import entries
 
 ROOT = Path(__file__).resolve().parents[1]
 # The OS build, its tools and firmware come from a glaze-os checkout (GLAZE_DIR).
 GLAZE = Path(os.environ.get('GLAZE_DIR', ROOT.parent / 'glaze-os')).resolve()
+
+
+def builtin_catalog(logical):
+    # SpringBoard now uses the shared X-macro catalog, rather than literals in draw.c.
+    header = (GLAZE / 'lib/include/glaze/builtin_apps.h').read_text(encoding='utf-8')
+    names = re.findall(r'X\("([^"]+)",\s*"[^"]+",\s*"bin/([^"]+)"', header)
+    size = struct.unpack_from('<I', logical, 4*16+12)[0]*512
+    programs = entries(logical[0x40000:0x40000+size], b'GZRF')
+    catalog = [{'id': 'builtin:' + program, 'name': name, 'program': program,
+                'kind': 'builtin', 'required': program in ('files', 'settings'), 'default': True}
+               for name, program in names if 'bin/' + program in programs]
+    if not {'builtin:files', 'builtin:settings'} <= {a['id'] for a in catalog}:
+        raise ValueError('Bundled OS lacks the required Files/Settings app catalog')
+    return catalog
 
 
 def package_infos():
@@ -28,7 +43,7 @@ def package_infos():
     return [info for repo in repos for info in sorted((repo / 'packages').glob('*/Info'))]
 
 
-def validate_update(path, build_id):
+def validate_update(path, build_id, logical_path=None, expected_version=None):
     if path is None:
         raise ValueError('A signed matching OS update is required (--os-update).')
     data = Path(path).read_bytes()
@@ -38,7 +53,7 @@ def validate_update(path, build_id):
     version = data[24:40].split(b'\0')[0].decode('ascii')
     build = data[40:72].split(b'\0')[0].decode('ascii')
     if (header != 512 or size != len(data) or not 12 <= count <= 315 or
-            build != build_id or version != (GLAZE / 'VERSION').read_text().strip() or
+            build != build_id or version != (expected_version or (GLAZE / 'VERSION').read_text().strip()) or
             hashlib.sha256(data[512:]).digest() != data[72:104]):
         raise ValueError('OS update does not match the release')
     # Verify with the same pinned release key trusted by the device.
@@ -72,7 +87,7 @@ def validate_update(path, build_id):
             raise ValueError('Invalid update block checksum')
         blocks.append(block)
     payload = b''.join(blocks)
-    logical = (GLAZE / 'out/glaze.bin').read_bytes()
+    logical = Path(logical_path or GLAZE / 'out/glaze.bin').read_bytes()
     if payload != logical[0x14000:0x14000+len(payload)]:
         raise ValueError('Signed update differs from bundled NAND kernel/ROMFS')
     return {'version': version, 'build': build, 'spl_min': spl}
@@ -98,11 +113,7 @@ def stage_resources(out, native_dir, build_id, ext='', os_update=None):
     for name in ('physical_nand.py', 'nand_transaction.py'):
         shutil.copy2(GLAZE / 'tools' / name, resources / 'tools')
     # The complete offline catalog is shipped even when optional apps are deselected.
-    catalog = []
-    draw = (GLAZE / 'servers/springboard/draw.c').read_text()
-    for name, program in re.findall(r'\.label = "([^"]+)".*?\.path = "bin/([^"]+)"', draw):
-        catalog.append({'id': 'builtin:' + program, 'name': name, 'program': program,
-                        'kind': 'builtin', 'required': program in ('files', 'settings'), 'default': True})
+    catalog = builtin_catalog((resources / 'glaze.bin').read_bytes())
     catalog.append({'id': 'builtin:wince', 'name': 'Windows CE compatibility', 'program': 'wince',
                     'kind': 'builtin', 'required': False, 'default': False})
     (resources / 'packages').mkdir()

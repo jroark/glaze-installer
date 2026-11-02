@@ -1,3 +1,76 @@
+# Windows USB recovery validation — 2026-11-01
+
+The Windows setup was rebuilt natively with portable WinLibs GCC 15.2.0
+(MinGW-w64 13, UCRT), NSIS 3.11, libusb 1.0.30 and libusbK 3.1.0.0. The
+existing signed OS 1.0/build `e9490e6`, CE loaders and offline payloads were
+verified and reused. The built-in catalog now comes from the shared
+`builtin_apps.h` definition; the default logical NAND image is byte-identical
+to the previous bundle's default image (SHA-256
+`e7c4e30bed06285dc80307770961f6cda33cbf60b07772ed79256145363d8dca`).
+
+Passed:
+
+- All 29 installer, eight app-selection and 15 maintenance/resource tests,
+  including the previously artifact-dependent tests against staged resources.
+- Four physical-image tests and five transaction-planning tests using the
+  rebuilt Windows NAND encoder and filesystem helpers.
+- Native Windows USB wire, controller, framing/failure, CE PC Connect/staging,
+  NAND capture and transaction-writer fixtures. A Windows-specific mocked
+  adapter covers driver rejection, exact-port selection, multiple-device
+  refusal, failed initialization/reset and handle cleanup. These fixtures
+  never open physical USB handles or program hardware.
+- Win64's mock reboot fixture now uses compiler-local jumps instead of UCRT
+  exception unwinding. Debugging identified the old intermittent crash in
+  `RtlVirtualUnwind`; 20 repeated controller-fixture runs pass after the fix.
+- The new setup installed successfully over the existing per-user application.
+  Its installed runtime passes the bundle self-check (30 catalog entries),
+  fresh-install GUI/app chooser smoke test and maintenance GUI smoke test on
+  the Windows desktop. GUI smoke tests require desktop access outside the
+  restricted execution sandbox.
+- On the physical BE-300 at USB location `1.1`, Zadig changed WinUSB to libusbK.
+  Three read-only installer RAM boot/reconnect cycles passed without a cable
+  replug. Each handoff recovered using the real libusbK port-reset operation.
+  No raw NAND programming occurred during these cycles. Logs are under
+  `out/hardware-validation/` and `out/hardware-ram.log`.
+
+Physical installation completed:
+
+- Both complete reads of the 17,301,504-byte CE backup matched. The verified
+  backup and all preparation artifacts are retained under Documents/Glaze
+  Backups; the exact path is in `out/hardware-prepare.jsonl`.
+- The final installed package resumed the saved preparation. The original
+  record is retained; `installation-current.json` refreshes catalog metadata
+  after verifying that all six artifact hashes and default NAND bytes remain
+  identical. `out/hardware-preflight-review.json` records that review.
+- The repair RAM handoff reconnected automatically. Full source preflight
+  passed, then all 1,004 changed blocks were written and individually verified,
+  with block zero last. No USB transfer failed during capture, preflight,
+  programming or final read-back, and no manual cable reconnect was needed.
+- Whole-device verification passed for every data and spare byte. The device
+  cold-booted from NAND to its normal home screen (confirmed on the physical
+  display). USB reconnected automatically within the 90-second deadline and
+  HELLO confirmed build `e9490e6`, 14,220 KiB free RAM and normal capabilities
+  `0x3fff`, with neither installer nor repair mode active.
+- Check status completed through the installed maintenance companion: OS 1.0,
+  build `e9490e6`, flags 3, last OTA result 0, and 4,546,560 bytes free on Flash.
+  The initial attempt was rejected while the screen was locked; after the
+  user unlocked it, the status request and companion cleanup both passed.
+  The completed install and status logs are `out/hardware-install.jsonl`
+  and `out/hardware-status.jsonl`. CE was not restored afterward.
+
+The final error-path patches also distinguish an unplugged device from an
+incompatible driver and reject unsupported helper commands. Native writer display updates are optional;
+the production writer fixture verifies that a rejected display update still
+runs all source and target checks. Hardware status updates succeeded during
+the full installation run.
+
+The final setup and its checksum are under `out/installer/downloads/`, with
+the build tree under `out/installer-windows-final/`. `out/final-tests.log`
+records 69 passing tests with no skips. Post-hardware diagnostic changes are
+covered by the mocked Windows adapter, native writer and installed package checks.
+This work does not publish a release or validate physical CE restoration,
+power-loss recovery, other Windows machines or macOS hardware.
+
 # Offline maintenance validation — 2026-11-01
 
 Maintenance changes build the MIPS companion and native USB helper. Fourteen orchestration/resource tests and six native companion tests pass.

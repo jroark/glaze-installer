@@ -16,7 +16,7 @@ class InstallerTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.events = []
-        self.engine = Installer(self.root, self.events.append)
+        self.engine = Installer(self.root, self.events.append, state_dir=self.root / 'state')
 
     def record(self):
         names = ['original-ce.raw', 'candidate.raw', 'inventory.json', 'placement.json', 'install.bin', 'review.json']
@@ -58,7 +58,8 @@ class InstallerTest(unittest.TestCase):
             (folder / 'original-ce.raw').write_bytes(b'CE')
             calls.append(('prepare', verify_wince))
             return record
-        with patch.object(self.engine, 'prepare', side_effect=prepare), \
+        with patch.object(self.engine, 'verify'), patch.object(self.engine, 'probe', return_value={'runtime': 'CE'}), \
+             patch.object(self.engine, 'prepare', side_effect=prepare), \
              patch.object(self.engine, 'apply', side_effect=lambda r: calls.append(('apply', r))):
             self.engine.install_device(self.root / 'backups', [], save_backup=True, verify_wince=False)
         self.assertEqual(calls[0], ('prepare', False))
@@ -83,7 +84,8 @@ class InstallerTest(unittest.TestCase):
                 self.assertTrue(paths[-1].exists())
                 if fails:
                     raise RuntimeError('simulated failure')
-            with patch.object(self.engine, 'prepare', side_effect=prepare), patch.object(self.engine, 'apply', side_effect=apply):
+            with patch.object(self.engine, 'verify'), patch.object(self.engine, 'probe', return_value={'runtime': 'CE'}), \
+                 patch.object(self.engine, 'prepare', side_effect=prepare), patch.object(self.engine, 'apply', side_effect=apply):
                 if fails:
                     with self.assertRaisesRegex(RuntimeError, 'simulated failure'):
                         self.engine.install_device(self.root / 'unused', [], save_backup=False, verify_wince=False)
@@ -234,6 +236,137 @@ class InstallerTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'Expected build expected, detected old'):
                 self.engine.apply(record)
 
+    def test_optional_status_failure_does_not_abort(self):
+        self.engine.install_ui = True
+        with patch.object(self.engine, 'run', side_effect=RuntimeError('USB disconnected')):
+            self.engine.device_status(2)
+        self.assertIn('Optional device status', self.events[-1]['text'])
+
+    def test_reconnect_rejects_wrong_build(self):
+        self.engine.manifest = {'build_id': 'expected'}
+        self.engine.build = 'another'
+        with patch('engine.time.sleep'), patch.object(self.engine, 'run', return_value=[
+                {'event': 'device', 'runtime': 'Glaze'}, {'event': 'capabilities', 'value': 4096}]):
+            with self.assertRaisesRegex(RuntimeError, 'Expected build expected'):
+                self.engine.wait_glaze(4096)
+        self.assertFalse(any(e['event'] == 'reconnected' for e in self.events))
+
+    def test_final_boot_timeout_does_not_instruct_reinstallation(self):
+        clock = [0]
+        with patch('engine.time.monotonic', side_effect=lambda: clock[0]), \
+             patch('engine.time.sleep', side_effect=lambda n: clock.__setitem__(0, clock[0]+n)), \
+             patch.object(self.engine, 'run', side_effect=RuntimeError('unavailable')):
+            with self.assertRaisesRegex(RuntimeError, 'Use Check status.*do not reinstall'):
+                self.engine.wait_glaze(programmed=True)
+
+    def test_programming_phase_blocks_second_apply(self):
+        record = self.record()
+        self.engine.device = '1.2'
+        self.engine.save_pending(record, 'programming')
+        with patch.object(self.engine, 'verify'), patch.object(self.engine, 'probe') as probe, \
+             patch.object(self.engine, 'run') as run:
+            with self.assertRaisesRegex(RuntimeError, 'Automatic programming retry is disabled'):
+                self.engine.apply(record)
+        probe.assert_not_called()
+        run.assert_not_called()
+
+    def test_matching_repair_session_avoids_second_ram_boot(self):
+        record = self.record()
+        self.engine.manifest = {'build_id': 'test'}
+        self.engine.build = 'test'
+        device = {'runtime': 'Glaze', 'capabilities': 4096 | 16384 | 32768}
+        with patch.object(self.engine, 'verify'), patch.object(self.engine, 'probe', return_value=device), \
+             patch.object(self.engine, 'ram_boot') as boot, patch.object(self.engine, 'run'), \
+             patch.object(self.engine, 'wait_glaze'):
+            self.engine.apply(record)
+        boot.assert_not_called()
+        self.assertFalse(self.engine.pending_path().exists())
+
+    def test_handoff_failure_preserves_prepared_record(self):
+        record = self.record()
+        with patch.object(self.engine, 'verify'), patch.object(self.engine, 'probe', return_value={'runtime': 'CE'}), \
+             patch.object(self.engine, 'ram_boot', side_effect=RuntimeError('handoff failed')):
+            with self.assertRaisesRegex(RuntimeError, 'handoff failed'):
+                self.engine.apply(record)
+        self.assertEqual(self.engine.pending()['phase'], 'prepared')
+        self.assertEqual(self.engine.pending()['record_sha256'], digest(record))
+
+    def test_unknown_pending_phase_is_rejected(self):
+        record = self.record()
+        self.engine.save_pending(record, 'prepared')
+        path = self.engine.pending_path()
+        data = json.loads(path.read_text())
+        data['phase'] = 'unknown'
+        path.write_text(json.dumps(data))
+        with self.assertRaisesRegex(ValueError, 'Invalid pending'):
+            self.engine.pending()
+
+    def test_tampered_pending_record_is_not_resumed(self):
+        record = self.record()
+        self.engine.device = '1.2'
+        self.engine.save_pending(record, 'prepared')
+        record.write_text('{}')
+        with patch.object(self.engine, 'verify'), \
+             patch.object(self.engine, 'probe', return_value={'runtime': 'Glaze'}), \
+             patch.object(self.engine, 'apply') as apply:
+            with self.assertRaisesRegex(ValueError, 'pending installation record differs'):
+                self.engine.install_device(self.root)
+        apply.assert_not_called()
+
+    def test_stalled_probe_is_killed_at_reconnect_deadline(self):
+        import time
+        script = self.root / 'blocked.py'
+        script.write_text('import time\ntime.sleep(10)\n')
+        self.engine.helper = Path(sys.executable)
+        self.engine.device = str(script)
+        self.engine.command_deadline = time.monotonic() + 0.2
+        start = time.monotonic()
+        with self.assertRaises(RuntimeError):
+            self.engine.run('probe')
+        self.assertLess(time.monotonic() - start, 3)
+
+    def test_complete_pending_preparation_resumes_install_flow(self):
+        record = self.record()
+        saved = json.loads(record.read_text())
+        saved.update(payload={'build_id': 'test'}, apps=[], verify_wince=True)
+        record.write_text(json.dumps(saved))
+        self.engine.device = '1.2'
+        self.engine.manifest = {'build_id': 'test'}
+        self.engine.build = 'test'
+        self.engine.save_pending(record, 'prepared')
+        device = {'runtime': 'Glaze', 'capabilities': 4096 | 16384 | 32768}
+        with patch.object(self.engine, 'verify'), patch.object(self.engine, 'probe', return_value=device), \
+             patch('engine.load_catalog', return_value=[]), \
+             patch.object(self.engine, 'prepare') as prepare, patch.object(self.engine, 'apply') as apply:
+            self.engine.install_device(self.root, [])
+        prepare.assert_not_called()
+        apply.assert_called_once_with(record.resolve())
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows helper ownership')
+    def test_second_windows_helper_stops_before_device_access(self):
+        import ctypes
+        import subprocess
+        helper = Path(__file__).resolve().parents[1] / 'out/installer/resources/bin/glaze-installer-usb.exe'
+        if not helper.exists():
+            self.skipTest('requires staged Windows helper')
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+        kernel.CreateMutexW.restype = ctypes.c_void_p
+        kernel.ReleaseMutex.argtypes = [ctypes.c_void_p]
+        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = kernel.CreateMutexW(None, True, 'Local\\GlazeInstallerUSB07CF2002')
+        self.assertTrue(handle)
+        try:
+            result = subprocess.run([str(helper), 'auto', 'probe'], capture_output=True,
+                                    text=True, encoding='utf-8', timeout=5,
+                                    creationflags=subprocess.CREATE_NO_WINDOW)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('"stage":"busy"', result.stdout)
+            self.assertNotIn('"event":"device"', result.stdout)
+        finally:
+            kernel.ReleaseMutex(handle)
+            kernel.CloseHandle(handle)
+
 
 class OfflinePipelineTest(unittest.TestCase):
     @unittest.skipUnless((Path(__file__).resolve().parents[1] / 'out/installer/resources/manifest.json').exists(),
@@ -252,7 +385,7 @@ class OfflinePipelineTest(unittest.TestCase):
         factory = fixture.PhysicalNand.backup
         events, calls = [], []
         with tempfile.TemporaryDirectory() as tmp:
-            engine = Installer(root / 'out/installer/resources', events.append, '1.2')
+            engine = Installer(root / 'out/installer/resources', events.append, '1.2', state_dir=Path(tmp) / 'state')
             def run(*args):
                 calls.append(args[0])
                 if args[0] == 'probe':
@@ -267,7 +400,7 @@ class OfflinePipelineTest(unittest.TestCase):
             self.assertEqual(json.loads(record.read_text())['apps'], ['builtin:files', 'builtin:settings', 'package:sketch'])
             # Retry after a failed handoff can reuse this installer's RO RAM
             # session instead of requiring another CE boot or touching NAND.
-            resumed = Installer(root / 'out/installer/resources', events.append, '1.2')
+            resumed = Installer(root / 'out/installer/resources', events.append, '1.2', state_dir=Path(tmp) / 'state')
             resumed.install_ui = True
             resumed.build = json.loads((root / 'out/installer/resources/manifest.json').read_text())['build_id']
             def resumed_run(*args):
@@ -278,7 +411,7 @@ class OfflinePipelineTest(unittest.TestCase):
             with patch.object(resumed, 'run', side_effect=resumed_run), patch.object(resumed, 'ram_boot') as boot:
                 resumed.prepare(tmp, [])
                 boot.assert_not_called()
-            older = Installer(root / 'out/installer/resources', events.append, '1.2')
+            older = Installer(root / 'out/installer/resources', events.append, '1.2', state_dir=Path(tmp) / 'state')
             older.build = 'previous-ram-build'
             def older_run(*args):
                 if args[0] == 'probe':
@@ -289,7 +422,7 @@ class OfflinePipelineTest(unittest.TestCase):
                 older.prepare(tmp, [])
                 boot.assert_called_once_with('ro')
             self.assertEqual((folder / 'original-ce.raw').read_bytes(), factory)
-            single_pass = Installer(root / 'out/installer/resources', events.append, '1.2')
+            single_pass = Installer(root / 'out/installer/resources', events.append, '1.2', state_dir=Path(tmp) / 'state')
             fast_calls = []
             def fast_run(*args):
                 fast_calls.append(args[0])

@@ -201,5 +201,32 @@ class SignedPayload(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'differs'):
                     package.validate_update(update, 'release')
 
+class ExistingBundle(unittest.TestCase):
+    def test_resource_hashes_and_signed_release_are_required(self):
+        import hashlib
+        from package_windows import validate_bundle
+        with tempfile.TemporaryDirectory() as folder:
+            bundle = Path(folder)
+            resources = bundle / 'resources'
+            resources.mkdir()
+            (resources / 'apps.json').write_bytes(b'[]')
+            metadata = {'version': '1.1', 'build': 'release', 'spl_min': 1}
+            manifest = {'build_id': 'release', 'os': metadata,
+                        'files': {'apps.json': hashlib.sha256(b'[]').hexdigest()}}
+            (resources / 'manifest.json').write_text(json.dumps(manifest))
+            with patch('package_windows.validate_update', return_value=metadata) as verify:
+                self.assertEqual(validate_bundle(bundle)[1], manifest)
+                verify.assert_called_once_with((resources / 'update.gzu').resolve(), 'release', (resources / 'glaze.bin').resolve(), '1.1')
+            (resources / 'apps.json').write_bytes(b'[1]')
+            with patch('package_windows.validate_update') as verify:
+                with self.assertRaisesRegex(ValueError, 'failed verification'):
+                    validate_bundle(bundle)
+                verify.assert_not_called()
+            manifest['files'] = {'../escape': '0'*64}
+            (resources / 'manifest.json').write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError, 'failed verification'):
+                validate_bundle(bundle)
+
+
 if __name__ == '__main__':
     unittest.main()

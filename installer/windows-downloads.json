@@ -1,4 +1,12 @@
 {
+  "libusbK-3.1.0.0-bin.7z": {
+    "url": "https://github.com/mcuee/libusbk/releases/download/V3.1.0.0/libusbK-3.1.0.0-bin.7z",
+    "sha256": "38605d8d5a86f408a4b7bec60f6d4a096050eee72f89a63a8d5be125252d3fe7"
+  },
+  "libusbK-3.1.0.0-src.7z": {
+    "url": "https://github.com/mcuee/libusbk/releases/download/V3.1.0.0/libusbK-3.1.0.0-src.7z",
+    "sha256": "e10210802d234d2ba3ad233089bb4e94a3b9e1ec5d38fc887868d3c7a6e7d477"
+  },
   "python-3.11.9-embed-amd64.zip": {
     "url": "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip",
     "sha256": "009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b"
