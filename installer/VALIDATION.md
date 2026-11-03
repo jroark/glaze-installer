@@ -1,3 +1,58 @@
+# Offline app and WL54-CF management — 2026-11-02
+
+The Windows setup was rebuilt with the verified OS 1.0/build `e9490e6`, signed
+update, RAM firmware, optional packages and pinned Marvell firmware assets.
+Only host application code and the protocol-2 maintenance companion were
+changed. The companion is version 1.1, MIPS II/O32/soft-float PIE, linked against
+the verified release's libraries with no new OS dependency. The portable build
+uses Zig 0.13.0 and LLVM's LLD; neither is shipped in the installer.
+
+Passed (94 tests, no skips):
+
+- 68 installer tests: 30 operation/reconnect tests, eight app-selection tests,
+  19 maintenance/packaging tests, six physical system-image tests, and five
+  system-operation failure/order tests.
+- Eight production native Windows USB/capture/writer/reset fixtures, nine native
+  companion tests, four physical packer tests, and five NAND transaction tests.
+- System-image tests use the production Reed-Solomon encoder and boot checker.
+  They install/remove firmware, restore a removed built-in app, keep every file
+  system and quarantined byte, update an existing boot replacement in reserve,
+  and reject mismatched boot/kernel/ROMFS content, damaged ECC and ambiguous maps.
+- Operation tests prove that failed/uncertain writes and uninstall replies stop
+  without replay, programming phase is persisted before apply, invalid sources
+  never reach apply, external power/build checks precede RAM boot, and the old
+  repair session cannot count as a successful final NAND boot.
+- The final staged Windows bundle self-check passed (30 catalog entries), and
+  both GUI smoke modes passed using its private Python 3.11.9/Tk runtime. The
+  maintenance window resizes to show the added actions; both chooser modes fit
+  the screen with Built-in apps, Additional apps and Optional hardware tabs.
+  Windows accessibility confirmed the maintenance dialog; automated screenshot
+  capture timed out, so this is a functional/geometry smoke check, not visual QA.
+- On the attached BE-300, the rebuilt companion launched after unlock, reported
+  protocol 2, OS 1.0/build `e9490e6`, 11 built-in apps, the three existing optional
+  apps, external power and absent WL54-CF firmware. Its quit/cleanup completed.
+  No existing app was uninstalled and no new physical NAND programming was
+  performed for this feature. Wi-Fi association with a physical WL54-CF card
+  and end-to-end built-in/firmware changes on hardware remain untested.
+
+Commands (native helper/compiler paths were set to the portable build outputs):
+
+```text
+python -B -m unittest discover -s tests -p installer*.py
+python -B tests/usb_host_windows.py
+python -B ../glaze-os/tests/maintenance_native.py
+python -B ../glaze-os/tests/physical_nand.py
+python -B ../glaze-os/tests/nand_transaction.py
+python -B installer/app.py --resources RESOURCES --check-bundle
+python -B installer/app.py --resources RESOURCES --smoke-test
+python -B installer/app.py --resources RESOURCES --smoke-test --smoke-maintenance
+```
+
+The rebuilt setup is `out/installer-windows-apps/Glaze-Installer-windows-x64.exe`
+(27,547,844 bytes), SHA-256
+`ac09529f6d371724f871765c7efbd454e03b7f28688705b7925dd2b2bbd2f70d`.
+Its `SHA256SUMS` is alongside it. No release was published.
+
 # Windows USB recovery validation — 2026-11-01
 
 The Windows setup was rebuilt natively with portable WinLibs GCC 15.2.0

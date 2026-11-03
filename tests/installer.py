@@ -161,6 +161,14 @@ class InstallerTest(unittest.TestCase):
         self.assertEqual(run.call_args_list[0].args, ('probe',))
         self.assertEqual(run.call_count, 1)
 
+    def test_nand_boot_waits_for_repair_session_to_exit(self):
+        def response(caps):
+            return [{'event': 'device', 'runtime': 'Glaze'}, {'event': 'capabilities', 'value': caps}]
+        with patch('engine.time.sleep'), patch.object(self.engine, 'run', side_effect=[response(32768|16384|3), response(3)]) as run:
+            self.engine.wait_glaze(programmed=True, nand_boot=True)
+        self.assertEqual(run.call_count, 2)
+        self.assertTrue(any(e['event'] == 'reconnected' for e in self.events))
+
     def test_tampered_saved_backup_never_boots_or_writes(self):
         record = self.record()
         (self.root / 'original-ce.raw').write_bytes(b'changed')

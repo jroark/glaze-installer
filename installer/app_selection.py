@@ -22,6 +22,7 @@ def entries(blob, magic):
         parts = PurePosixPath(name)
         if (not name or '\\' in name or ':' in name or parts.is_absolute() or
                 any(p in ('', '.', '..') for p in name.split('/')) or name in result or
+                (magic == b'GZRF' and offset % 4096) or
                 offset < end or offset + size > len(blob)):
             raise ValueError('Invalid app archive entry: ' + name)
         result[name] = blob[offset:offset + size]

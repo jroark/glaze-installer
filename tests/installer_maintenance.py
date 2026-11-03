@@ -37,6 +37,44 @@ class Maintenance(unittest.TestCase):
         self.assertEqual(version_key('1'), version_key('1.0'))
         self.assertGreater(version_key('1.10'), version_key('1.9'))
 
+    def test_uninstall_targets_only_selected_catalog_packages(self):
+        catalog = [{'id': 'builtin:files', 'program': 'files', 'name': 'Files', 'kind': 'builtin', 'required': True},
+                   {'id': 'package:test', 'program': 'test', 'name': 'Test', 'kind': 'package'},
+                   {'id': 'package:other', 'program': 'other', 'name': 'Other', 'kind': 'package'}]
+        self.i.maintenance_session = self.session
+        requests = []
+        def request(action):
+            requests.append(action)
+            return {'protocol': 2, 'apps': ({'other': '1.0'} if 'uninstall:test' in requests else {'test': '1.0', 'other': '1.0'}), 'code': 0}
+        self.i.maintenance_request = request
+        with patch('engine.load_catalog', return_value=catalog):
+            self.i.uninstall_apps(['package:test', 'builtin:files'])
+        self.assertEqual(requests, ['info', 'uninstall:test', 'info'])
+
+    def test_uninstall_uncertain_response_stops_without_replay(self):
+        catalog = [{'id': 'package:'+x, 'program': x, 'name': x, 'kind': 'package'} for x in ('a', 'b')]
+        self.i.maintenance_session = self.session
+        requests = []
+        def request(action):
+            requests.append(action)
+            if action == 'info':
+                return {'protocol': 2, 'apps': {'a': '1.0', 'b': '1.0'}}
+            raise RuntimeError('lost reply')
+        self.i.maintenance_request = request
+        with patch('engine.load_catalog', return_value=catalog), self.assertRaisesRegex(RuntimeError, 'lost reply'):
+            self.i.uninstall_apps(['package:a', 'package:b'])
+        self.assertEqual(requests, ['info', 'uninstall:a'])
+
+    def test_uninstall_rejects_old_companion_and_unknown_apps(self):
+        catalog = [{'id': 'package:test', 'program': 'test', 'name': 'Test', 'kind': 'package'}]
+        self.i.maintenance_session = self.session
+        self.i.maintenance_request = lambda action: {'protocol': 1}
+        with patch('engine.load_catalog', return_value=catalog):
+            with self.assertRaisesRegex(ValueError, 'Unknown'):
+                self.i.uninstall_apps(['package:../bad'])
+            with self.assertRaisesRegex(ValueError, 'does not support'):
+                self.i.uninstall_apps(['package:test'])
+
     def test_stale_response_ignored(self):
         calls = []
         def run(action, *args):
@@ -202,6 +240,23 @@ class SignedPayload(unittest.TestCase):
                     package.validate_update(update, 'release')
 
 class ExistingBundle(unittest.TestCase):
+    def test_packaging_requires_management_companion(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'maintenance.gzp'
+            elf = bytearray(52)
+            elf[:6] = b'\x7fELF\x01\x01'
+            struct.pack_into('<HH', elf, 16, 3, 8)
+            struct.pack_into('<I', elf, 36, 0x10001007)
+            for protocol in ('1', '2'):
+                data = bytearray(archive({'Info': ('id=maintenance\ninstaller-protocol=' + protocol + '\n').encode(), 'app': bytes(elf)}))
+                data[:4] = b'GZPK'
+                path.write_bytes(data)
+                if protocol == '1':
+                    with self.assertRaisesRegex(ValueError, 'protocol 2'):
+                        package.validate_maintenance(path)
+                else:
+                    package.validate_maintenance(path)
+
     def test_resource_hashes_and_signed_release_are_required(self):
         import hashlib
         from package_windows import validate_bundle

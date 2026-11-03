@@ -19,6 +19,16 @@ ROOT = Path(__file__).resolve().parents[1]
 GLAZE = Path(os.environ.get('GLAZE_DIR', ROOT.parent / 'glaze-os')).resolve()
 
 
+def validate_maintenance(path):
+    files = entries(Path(path).read_bytes(), b'GZPK')
+    metadata = dict(line.split('=', 1) for line in files.get('Info', b'').decode().splitlines() if '=' in line)
+    elf = files.get(metadata.get('exec', 'app'), b'')
+    if (metadata.get('id') != 'maintenance' or metadata.get('installer-protocol') != '2' or
+            len(elf) < 52 or elf[:6] != b'\x7fELF\x01\x01' or struct.unpack_from('<HH', elf, 16) != (3, 8) or
+            struct.unpack_from('<I', elf, 36)[0] & 0xf000f000 != 0x10001000):
+        raise ValueError('Rebuild maintenance.gzp with installer protocol 2, then supply --maintenance-package when reusing a bundle')
+
+
 def builtin_catalog(logical):
     # SpringBoard now uses the shared X-macro catalog, rather than literals in draw.c.
     header = (GLAZE / 'lib/include/glaze/builtin_apps.h').read_text(encoding='utf-8')
@@ -106,6 +116,7 @@ def stage_resources(out, native_dir, build_id, ext='', os_update=None):
         shutil.copy2(GLAZE / 'out/glazeboot' / name, resources / 'ram')
     shutil.copy2(GLAZE / 'out/glaze.bin', resources)
     shutil.copy2(os_update, resources / 'update.gzu')
+    validate_maintenance(GLAZE / 'out/pkg/maintenance.gzp')
     shutil.copy2(GLAZE / 'out/pkg/maintenance.gzp', resources / 'maintenance.gzp')
     shutil.copy2(GLAZE / 'LICENSE', resources / 'LICENSE')
     shutil.copytree(GLAZE / 'userdata', resources / 'userdata')
