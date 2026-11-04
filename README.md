@@ -24,6 +24,7 @@ cmake -S installer -B out/installer-native -DCMAKE_BUILD_TYPE=Release   # -DGLAZ
 cmake --build out/installer-native -j8
 python3 tests/installer.py && python3 tests/installer_apps.py && python3 tests/installer_maintenance.py
 python3 tests/installer_system.py && python3 tests/installer_system_flow.py
+python3 tests/installer_gui.py && python3 tests/installer_transport.py
 ```
 
 Finished installers go to the website through glaze-web's `site/downloads`.

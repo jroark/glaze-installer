@@ -126,6 +126,62 @@ covered by the mocked Windows adapter, native writer and installed package check
 This work does not publish a release or validate physical CE restoration,
 power-loss recovery, other Windows machines or macOS hardware.
 
+# Windows installer 0.1.2 — 2026-11-02
+
+- Maintenance rebuild from the standalone installer workspace, preserving the
+  signed `e9490e6` OS payload, optional packages and macOS download. No new
+  firmware or device behavior is introduced relative to installer 0.1.1.
+- Existing resource hashes, the release-key signature and exact signed NAND
+  payload were verified before reuse. The Windows USB helper was rebuilt from
+  shared USB source revision `71957ca1d61f8ac4a3d474acbff4ad9106c092d6`.
+- Installer, GUI, transport, app-selection and maintenance suites passed
+  (46 passed, three artifact-dependent cases skipped); all eight website release
+  checks passed.
+- The new setup installed silently in an isolated Wine environment. Its private
+  Python 3.11.9 passed `--check-bundle` with 19 catalog entries, both GUI smoke
+  modes passed, and the installed DisplayVersion is 0.1.2. The production Windows
+  capture regression passed snapshot and two-pass backup, exact binary contents,
+  publication/cleanup, no overwrite, mismatch rejection and read failure.
+- Release files and the exact installer source archive are staged under
+  `out/release-0.1.2`. No USB device was opened or NAND programmed. Physical
+  Windows USB handoff and end-to-end device validation remain outstanding.
+
+# Windows USB reconnect handling — 2026-11-01
+
+- WinUSB cannot issue an actual device reset, so the existing libusb reset loop
+  cannot reliably recover CE-to-Glaze enumeration on Windows. See the
+  [libusb Windows limitations](https://github.com/libusb/libusb/wiki/Windows#known-restrictions).
+- A desktop replug dialog appears after 15 seconds while probing continues. It
+  closes on successful reconnect; terminal errors also open a dialog with the
+  session-log path. Background detection does not open repeated error dialogs.
+- The final boot timeout reports verified programming and incomplete boot
+  verification. It does not claim NAND was untouched or suggest reinstalling.
+- Snapshot errors retain native diagnostics and distinguish USB open/handshake
+  failures from read/save failures. Bulk transfer errors are logged without
+  packet contents, and failed Windows snapshot publication reports its file error.
+- The Windows CRT opens NAND capture files without delete sharing, but the shared
+  capture routine unlinks its partial file before closing it. A Windows regression
+  running that production routine under Wine reproduced the original failure after
+  all 4,682 read requests (32,768 pages) completed. Exclusive capture creation now
+  uses `CreateFileA` with `FILE_SHARE_DELETE` and binary mode. The same regression
+  passes for snapshot, two-pass backup, exact binary bytes, no overwrite, mismatch
+  rejection and read failure. No shared glaze-os source was changed.
+- Twenty-two orchestration tests, three GUI event-handler tests with widget
+  doubles, two native transport/capture tests, five app-selection tests and
+  fourteen maintenance tests passed. Three additional artifact-dependent tests
+  skipped. The native helper builds for both macOS and Windows x64.
+- A physical Windows re-test remains necessary to confirm USB handoff and the
+  reported snapshot failure on the device. These checks did not open USB or
+  program NAND.
+- Windows installer 0.1.1 was repackaged using the prior release's coherent
+  `e9490e6` firmware resources. Every existing resource hash, the release-key
+  signature and exact signed NAND payload were verified before reuse. The helper
+  was rebuilt with the Windows application manifest, Python sources replaced,
+  and native binary hashes added to the bundle manifest. The installed private
+  Windows runtime passed `--check-bundle`; GUI checks use an isolated Wine prefix.
+  Release artifacts and the exact installer source archive are staged in
+  `out/release-0.1.1`. The macOS installer and firmware version remain unchanged.
+
 # Offline maintenance validation — 2026-11-01
 
 Maintenance changes build the MIPS companion and native USB helper. Fourteen orchestration/resource tests and six native companion tests pass.

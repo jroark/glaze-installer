@@ -2,6 +2,11 @@ Unicode true
 !include "MUI2.nsh"
 !include "x64.nsh"
 Name "Glaze BE-300 Installer"
+VIProductVersion "0.1.2.0"
+VIAddVersionKey "ProductName" "Glaze BE-300 Installer"
+VIAddVersionKey "ProductVersion" "0.1.2"
+VIAddVersionKey "FileVersion" "0.1.2"
+VIAddVersionKey "FileDescription" "Glaze BE-300 offline USB installer"
 OutFile "${OUTPUT_FILE}"
 InstallDir "$LOCALAPPDATA\Programs\Glaze Installer"
 RequestExecutionLevel user
@@ -30,7 +35,7 @@ Section "Glaze Installer"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   CreateShortcut "$SMPROGRAMS\Glaze BE-300 Installer.lnk" "$INSTDIR\Glaze Installer.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GlazeInstaller" "DisplayName" "Glaze BE-300 Installer"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GlazeInstaller" "DisplayVersion" "0.1.0"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GlazeInstaller" "DisplayVersion" "0.1.2"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GlazeInstaller" "UninstallString" '$\"$INSTDIR\Uninstall.exe$\"'
 SectionEnd
 Section "Uninstall"

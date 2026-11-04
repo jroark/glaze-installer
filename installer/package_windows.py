@@ -104,8 +104,8 @@ def main():
     def compile(name, sources, libraries=()):
         run(cc, *flags, *[Path(p) if Path(p).is_absolute() else GLAZE / p for p in sources], resource, *libraries, '-o', native / name)
     usb = 'tools/glaze-usb/'
-    compile('glaze-installer-usb.exe', [ROOT / 'installer/helper.c', ROOT / 'installer/windows_usb.c'] + [usb + n + '.c' for n in
-            ('transport', 'client', 'pcconnect', 'nand', 'nand_write')],
+    compile('glaze-installer-usb.exe', [ROOT / 'installer/helper.c', ROOT / 'installer/windows_usb.c', ROOT / 'installer/usb_transport.c'] + [usb + n + '.c' for n in
+            ('client', 'pcconnect', 'nand', 'nand_write')],
             [libusb / 'MinGW64/static/libusb-1.0.dll.a', libusbk / 'bin/lib/amd64/libusbK.lib', '-lbcrypt'])
     compile('nand-inventory.exe', ['host/nand_inventory.c', 'kernel/drivers/nand_boot.c', 'kernel/drivers/nand_ecc.c'])
     fs = ['host/mkfsimg.c', 'servers/fs/ftl.c', 'third_party/littlefs/lfs.c', 'third_party/littlefs/lfs_util.c']
