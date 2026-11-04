@@ -1,3 +1,37 @@
+# Glaze OS 1.1 installers 0.2.0 — 2026-11-04
+
+Both installers were rebuilt for Glaze OS 1.1, build `4420239` (glaze-os
+`4420239733a3`). They include SPL 3, the signed `glaze-1.1.gzu` (published to
+the App Store), the RAM boot payload, WL54-CF firmware and the 19 optional
+packages built against the 1.1 SDK, including Blocks, Snake and Flappy.
+Packaging verified the update signature and its exact match with `glaze.bin`.
+
+Passed:
+
+- 78 installer tests (one Windows-only skip) on macOS with native Homebrew
+  pkg-config. The transport test needs arm64 libusb, not `/usr/local`'s.
+- The macOS app's bundled self-check (32 catalog entries) and both GUI smoke
+  modes. The maintenance window previously reported `fits: false` on macOS:
+  Aqua needs 637 px for the maintenance actions, but the width was fixed at
+  620. The window now uses its requested width.
+- The bundled macOS helpers are arm64 and load libusb from the app bundle
+  (`@rpath`, `@loader_path/../..`).
+- Windows setup under Wine: silent install, the self-check with the bundled
+  Python 3.11.9 runtime, both smoke modes, DisplayVersion 0.2.0, and the
+  native snapshot/backup regression (`tests/installer_capture.c`).
+- In glaze-os at this build: ktest ALL PASS with and without `--ne2000`, plus
+  `ota-test`, `wifi-retry-test`, `cf-boot-test` and `fat-test`.
+
+Artifacts:
+
+- `Glaze-Installer-2026-11-04-4420239-windows-x64.exe`: 27,529,512 bytes, SHA-256
+  `a0b57d9a389f23a7de776737835a597bc79d278c13846d96469f725eaa428c5f`
+- `Glaze-Installer-2026-11-04-4420239-macos-arm64.dmg`: 21,566,900 bytes, SHA-256
+  `768008648b2c04899cafc877285ba21e6ed6e9952d5bd483f87f47e2a68a96cc`
+
+Not tested here: physical installation or OS update on a BE-300 with these
+artifacts, Windows hardware USB, and macOS releases other than this one.
+
 # Offline app and WL54-CF management — 2026-11-02
 
 The Windows setup was rebuilt with the verified OS 1.0/build `e9490e6`, signed
