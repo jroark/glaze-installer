@@ -45,7 +45,11 @@ int main(int argc,char **argv) {
         printf("{\"event\":\"complete\",\"ok\":%s}\n",r ? "false" : "true");
         return r ? 1 : 0;
     }
-    if(usb_open(&l,device,0)) return 1;
+    if(usb_open(&l,device,0)) {
+        puts("{\"event\":\"failure\",\"stage\":\"usb-open\"}");
+        return 1;
+    }
+    const char *stage="operation";
     if(!strcmp(argv[2],"probe") && argc==3) {
         printf("{\"event\":\"device\",\"location\":\"%u",l.bus);
         for(unsigned j=0;j<l.port_count;j++) printf(".%u",l.ports[j]);
@@ -53,12 +57,17 @@ int main(int argc,char **argv) {
         r=0;
         if(l.revision==0x0100) {
             r=gu_hello(&c,&l);
+            if(r)stage="hello";
             if(!r) printf("{\"event\":\"capabilities\",\"value\":%u}\n",c.caps);
         }
     } else if(!strcmp(argv[2],"boot") && (argc==4 || (argc==5 && !strcmp(argv[4],"--skip-ce-test")))) {
         r=l.revision==0x0100 ? gu_hello(&c,&l) : 0;
         if(!r) r=l.revision==0x0100 ? gu_reload(&c,argv[3]) : ce_boot_options(&l,argv[3],-1,argc==4);
-    } else if(l.revision==0x0100 && !gu_hello(&c,&l)) {
+    } else if(l.revision==0x0100) {
+        if(gu_hello(&c,&l)) {
+            stage="hello";
+            goto done;
+        }
         if(!strcmp(argv[2],"status") && argc==6 && (c.caps&GU_CAP_INSTALL_STATUS)) {
             uint8_t data[12];int valid=1;
             for(unsigned j=0;j<3;j++) {
@@ -76,7 +85,9 @@ int main(int argc,char **argv) {
         else if(!strcmp(argv[2],"apply") && argc==6) r=gu_nand_apply(&c,argv[3],argv[4],argv[5],false,false);
         else if(!strcmp(argv[2],"cold-reboot") && argc==3 && (c.caps&GU_CAP_REBOOT_CE)) r=gu_call(&c,GU_REBOOT_CE,NULL,0);
     }
+done:
     usb_close(&l);
+    if(r)printf("{\"event\":\"failure\",\"stage\":\"%s\"}\n",stage);
     printf("{\"event\":\"complete\",\"ok\":%s}\n",r ? "false" : "true");
     return r ? 1 : 0;
 }

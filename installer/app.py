@@ -13,6 +13,17 @@ from engine import Installer, digest
 from app_selection import load_catalog, select, customize_logical
 
 
+def failure_message(text):
+    # Keep native diagnostics visible. In particular, a failed snapshot can be
+    # a local file error as well as a USB error.
+    for command, message in [
+            ('boot', 'Couldn’t start Glaze. On the BE-300, check Connections → PC Connect → Connection method: USB, then try again.'),
+            ('apply', 'Installation stopped. Keep external power connected and open Show details.')]:
+        if text.startswith(command + ' failed'):
+            return message + '\n\n' + text
+    return text
+
+
 def main():
     runtime = Path(sys.executable).parent
     if os.name == 'nt' and (runtime / 'tcl').exists():
@@ -100,7 +111,7 @@ def main():
     consequence = tk.StringVar()
     events = queue.Queue()
     state = {'busy': False, 'confirming': False, 'operation': None, 'done': False, 'details': False,
-             'last_error': None, 'backup': None, 'maintenance': False}
+             'last_error': None, 'backup': None, 'maintenance': False, 'reconnect_window': None}
     controls = []
     if args.smoke_test:
         log_folder = Path(tempfile.mkdtemp(prefix='glaze-ui-smoke-'))
@@ -182,6 +193,28 @@ def main():
     progress.pack(fill='x')
     actions = ttk.Frame(frame)
     actions.pack(fill='x', pady=(18, 10))
+
+    def close_reconnect():
+        if state['reconnect_window'] is not None:
+            state['reconnect_window'].destroy()
+            state['reconnect_window'] = None
+
+    def show_reconnect(text):
+        if state['reconnect_window'] is not None:
+            return
+        window = tk.Toplevel(root)
+        state['reconnect_window'] = window
+        window.title('Reconnect USB')
+        window.transient(root)
+        window.grab_set()
+        panel = ttk.Frame(window, padding=24)
+        panel.pack(fill='both', expand=True)
+        ttk.Label(panel, text='Reconnect your BE-300’s USB cable', font=('', 14, 'bold')).pack(anchor='w')
+        ttk.Label(panel, text=text, wraplength=440).pack(anchor='w', pady=(12, 18))
+        ttk.Button(panel, text='Keep waiting', command=close_reconnect).pack(anchor='e')
+        window.protocol('WM_DELETE_WINDOW', close_reconnect)
+        # Leave Tk's event loop and the worker running so a successful probe
+        # dismisses this prompt and continues without restarting installation.
 
     def launch(operation, argument=''):
         if state['busy']:
@@ -346,6 +379,11 @@ def main():
                 progress.stop()
                 progress.configure(mode='indeterminate')
                 progress.start()
+            if kind == 'reconnect':
+                status.set(text)
+                show_reconnect(text)
+            if kind == 'reconnected':
+                close_reconnect()
             if kind == 'progress':
                 progress.stop()
                 progress.configure(mode='determinate', maximum=event['total'], value=event['current'])
@@ -362,16 +400,11 @@ def main():
                 if state['backup']:
                     backup_button.pack(side='left', padx=8)
             if kind == 'error':
-                state['last_error'] = text
-                friendly = text
-                for command, message in [('boot', 'Couldn’t start Glaze. On the BE-300, check Connections → PC Connect → Connection method: USB, then try again.'),
-                                         ('backup', 'Couldn’t read your BE-300. Check USB and try again.'),
-                                         ('snapshot', 'Couldn’t read your BE-300. Check USB and try again.'),
-                                         ('apply', 'Installation stopped. Keep USB connected and open Details.')]:
-                    if text.startswith(command + ' failed.'):
-                        friendly = message
-                status.set('Connect your BE-300 to continue.' if state['operation'] == 'probe' else friendly)
+                friendly = failure_message(text)
+                state['last_error'] = friendly
+                status.set('Connect your BE-300 to continue.' if state['operation'] == 'probe' else friendly.split('\n\n', 1)[0])
             if kind == 'worker-done':
+                close_reconnect()
                 state['busy'] = False
                 progress.stop()
                 if event['code'] and not state['last_error']:
@@ -379,6 +412,9 @@ def main():
                 for control in controls:
                     control.configure(state='normal')
                 folder_button.configure(state='normal' if save_backup.get() else 'disabled')
+                if event['code'] and state['operation'] != 'probe':
+                    message = state['last_error'] or 'The operation stopped. Open Show details for more information.'
+                    messagebox.showerror('Installation needs attention', message + '\n\nSession log: ' + str(log_path), parent=root)
                 if state['operation'] == 'probe' and not event['code'] and state['maintenance']:
                     root.after(0, lambda: launch('maintenance-info'))
                 if state['operation'] == 'probe' and event['code']:

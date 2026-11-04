@@ -83,7 +83,30 @@ class Installer:
         if p.wait():
             if args[0] == 'boot' and any('No CE staging volume has enough' in e.get('text', '') for e in events):
                 raise RuntimeError('Not enough NAND space to start Glaze. In Windows CE, delete built-in apps you no longer need, keeping PC Connect available, then try again.')
-            raise RuntimeError(f'{args[0]} failed. See the saved log; no automatic retry was attempted.')
+            failure = next((e for e in events if e.get('event') == 'failure'), {})
+            diagnostics = [e['text'] for e in events if e.get('event') == 'log' and e.get('text')]
+            detail = '\n'.join(diagnostics[-6:])[-2000:]
+            stage = failure.get('stage', 'operation')
+            if args[0] in ('backup', 'snapshot'):
+                usb_failed = stage in ('usb-open', 'hello') or any(
+                    'USB bulk ' in line or ('Glaze USB op ' in line and 'timed out' in line)
+                    for line in diagnostics)
+                message = {
+                    'usb-open': 'Couldn’t open the USB connection to read your BE-300.',
+                    'hello': 'The USB connection opened, but Glaze did not complete its handshake.',
+                }.get(stage, 'The USB connection was interrupted while reading your BE-300.' if usb_failed else
+                      'Couldn’t finish reading or saving your BE-300’s NAND snapshot.')
+                message += ' No NAND programming was started. Keep external power connected.'
+                if usb_failed:
+                    action = 'Restore Windows CE' if self.restoring else 'Install Glaze'
+                    message += f' Unplug USB, reconnect it to the same port, then try {action} again.'
+                else:
+                    message += ' Check the diagnostic below and the backup folder before retrying.'
+            else:
+                message = f'{args[0]} failed ({stage}). No automatic retry was attempted.'
+            if detail:
+                message += '\n\n' + detail
+            raise RuntimeError(message)
         return events
 
     def device_status(self, stage):
@@ -98,9 +121,18 @@ class Installer:
         self.emit(dict(device, event='device'))
         return device
 
-    def wait_glaze(self, required=0):
+    def wait_glaze(self, required=0, *, programmed=False):
         start = time.monotonic()
-        deadline, reset_at = start + 90, start + 3
+        deadline, reset_at, prompt_at = start + 90, start + 3, start + 15
+        prompted = False
+        # RAM handoffs precede programming. The final NAND boot is only a
+        # verification step, so never tell the user to start installation again.
+        action = 'Restore Windows CE' if self.restoring else 'Install Glaze'
+        recovery = ('NAND programming was verified. After reconnecting, reopen the installer and use Check status to confirm the running Glaze build.'
+                    if programmed else
+                    f'No NAND programming was started. After reconnecting, try {action} again.')
+        instruction = ('Unplug and reconnect USB once, using the same USB port. '
+                       'Keep external power connected. ')
         while time.monotonic() < deadline:
             time.sleep(1)
             try:
@@ -110,18 +142,24 @@ class Installer:
             if any(e.get('runtime') == 'Glaze' for e in events):
                 caps = next((e['value'] for e in events if e.get('event') == 'capabilities'), 0)
                 if caps & required == required:
+                    self.emit({'event': 'reconnected'})
                     return
                 raise RuntimeError(f'Glaze connected but lacks required USB capabilities (need {required:#x}, got {caps:#x}).')
+            if not prompted and time.monotonic() >= prompt_at:
+                self.emit({'event': 'reconnect', 'text': 'Your BE-300 has not reconnected. ' + instruction +
+                           ('NAND programming has been verified. ' if programmed else '') +
+                           'The installer will continue automatically when Glaze reconnects.'})
+                prompted = True
             if time.monotonic() >= reset_at:
-                self.emit({'event': 'phase', 'text': 'Refreshing the USB connection after GlazeBoot handoff…'})
+                self.emit({'event': 'phase', 'text': 'Refreshing the USB connection after restart…'})
                 try:
-                    # Match glaze-usb's proven reconnect sequence. The helper
-                    # resets an unclaimed device even if set-configuration fails.
+                    # On macOS/Linux this can reset stale CE configuration.
+                    # WinUSB only resets pipes; a physical replug may be needed.
                     self.run('reset-link')
                 except RuntimeError:
                     pass  # GlazeBoot can still have USB powered down; retry.
                 reset_at = time.monotonic() + 5
-        raise RuntimeError('Glaze did not reconnect after USB refresh attempts. Unplug and reconnect USB once, then try Install Glaze again. No NAND programming was started by this reconnect step.')
+        raise RuntimeError('Glaze did not reconnect within 90 seconds. ' + instruction + recovery)
 
     def ram_boot(self, mode):
         # ce_test writes its nonce reply beside the payload; bundles are read-only.
@@ -275,7 +313,7 @@ class Installer:
             raise RuntimeError('CE bytes were restored and verified, but CE USB was not detected after reboot.')
         expected = self.manifest['build_id']
         try:
-            self.wait_glaze()
+            self.wait_glaze(programmed=True)
             if self.build != expected:
                 raise RuntimeError(f'Expected build {expected}, detected {self.build}')
         except RuntimeError as error:

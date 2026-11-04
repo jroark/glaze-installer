@@ -5,9 +5,10 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'installer'))
 from engine import Installer, digest
+from app import failure_message
 
 
 class InstallerTest(unittest.TestCase):
@@ -36,7 +37,6 @@ class InstallerTest(unittest.TestCase):
             run.assert_called_once_with('status', 1, 0, 0)
 
     def test_staging_space_failure_explains_ce_app_removal(self):
-        from unittest.mock import Mock
         process = Mock()
         process.stdout = iter(['No CE staging volume has enough additional free space; existing files were preserved\n'])
         process.wait.return_value = 1
@@ -47,6 +47,36 @@ class InstallerTest(unittest.TestCase):
         with patch('engine.subprocess.Popen', return_value=process):
             with self.assertRaisesRegex(RuntimeError, '^boot failed'):
                 self.engine.run('boot', 'artifacts')
+
+    def test_snapshot_failure_preserves_stage_and_native_diagnostics(self):
+        cases = [
+            ('usb-open', 'USB: LIBUSB_ERROR_ACCESS', 'Couldn’t open the USB connection'),
+            ('hello', 'USB bulk OUT failed: LIBUSB_ERROR_PIPE', 'did not complete its handshake'),
+            ('operation', 'USB bulk IN failed: LIBUSB_ERROR_IO', 'USB connection was interrupted'),
+            ('operation', 'Backup incomplete; private partial file: C:/Backup/original-ce.raw.partial', 'reading or saving'),
+        ]
+        for stage, diagnostic, message in cases:
+            with self.subTest(stage=stage, diagnostic=diagnostic):
+                process = Mock()
+                process.stdout = iter([diagnostic + '\n', json.dumps({'event': 'failure', 'stage': stage}) + '\n'])
+                process.wait.return_value = 1
+                with patch('engine.subprocess.Popen', return_value=process) as popen:
+                    with self.assertRaises(RuntimeError) as caught:
+                        self.engine.run('snapshot', self.root / 'original-ce.raw')
+                text = str(caught.exception)
+                self.assertIn(message, text)
+                self.assertIn(diagnostic, text)
+                self.assertIn('No NAND programming was started', text)
+                self.assertEqual(failure_message(text), text)
+                self.assertEqual(popen.call_count, 1)
+
+    def test_old_helper_snapshot_error_retains_diagnostics(self):
+        process = Mock()
+        process.stdout = iter(['Glaze USB op 31 timed out\n'])
+        process.wait.return_value = 1
+        with patch('engine.subprocess.Popen', return_value=process):
+            with self.assertRaisesRegex(RuntimeError, 'Glaze USB op 31 timed out'):
+                self.engine.run('snapshot', 'backup.raw')
 
     def test_automatic_install_keeps_chosen_backup(self):
         calls = []
@@ -150,6 +180,61 @@ class InstallerTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'Unplug and reconnect USB once'):
                 self.engine.wait_glaze(4096)
         self.assertEqual(clock[0], 90)
+        prompts = [e for e in self.events if e['event'] == 'reconnect']
+        self.assertEqual(len(prompts), 1)
+        self.assertIn('same USB port', prompts[0]['text'])
+        self.assertIn('continue automatically', prompts[0]['text'])
+
+    def test_replug_during_wait_resumes_without_restarting_boot(self):
+        clock = [0]
+        prompt_times = []
+        def emit(event):
+            self.events.append(event)
+            if event['event'] == 'reconnect':
+                prompt_times.append(clock[0])
+        self.engine.emit = emit
+        def run(command):
+            if command == 'probe' and clock[0] >= 18:
+                return [{'event': 'device', 'runtime': 'Glaze'}, {'event': 'capabilities', 'value': 4096}]
+            raise RuntimeError('waiting for replug')
+        with patch('engine.time.monotonic', side_effect=lambda: clock[0]), \
+             patch('engine.time.sleep', side_effect=lambda n: clock.__setitem__(0, clock[0] + n)), \
+             patch.object(self.engine, 'run', side_effect=run) as run_mock:
+            self.engine.wait_glaze(4096)
+        self.assertEqual(prompt_times, [15])
+        self.assertEqual(self.events[-1]['event'], 'reconnected')
+        self.assertNotIn('boot', [c.args[0] for c in run_mock.call_args_list])
+
+    def test_final_boot_timeout_never_claims_programming_did_not_start(self):
+        record = self.record()
+        self.engine.manifest = {'build_id': 'test'}
+        clock = [0]
+        def run(command, *args):
+            if command in ('probe', 'reset-link'):
+                raise RuntimeError('waiting for replug')
+            return []
+        with patch.object(self.engine, 'verify'), patch.object(self.engine, 'probe'), \
+             patch.object(self.engine, 'ram_boot'), patch.object(self.engine, 'run', side_effect=run), \
+             patch('engine.time.monotonic', side_effect=lambda: clock[0]), \
+             patch('engine.time.sleep', side_effect=lambda n: clock.__setitem__(0, clock[0] + n)):
+            with self.assertRaises(RuntimeError) as caught:
+                self.engine.apply(record)
+        text = str(caught.exception)
+        self.assertIn('programming verified; boot verification incomplete', text)
+        self.assertIn('Check status', text)
+        self.assertNotIn('No NAND programming', text)
+        self.assertNotIn('try Install Glaze again', text)
+        self.assertTrue(any(e['event'] == 'verified' for e in self.events))
+        self.assertFalse(any(e['event'] == 'success' for e in self.events))
+
+    def test_restore_handoff_timeout_names_restore_action(self):
+        self.engine.restoring = True
+        clock = [0]
+        with patch('engine.time.monotonic', side_effect=lambda: clock[0]), \
+             patch('engine.time.sleep', side_effect=lambda n: clock.__setitem__(0, clock[0] + n)), \
+             patch.object(self.engine, 'run', side_effect=RuntimeError('unavailable')):
+            with self.assertRaisesRegex(RuntimeError, 'try Restore Windows CE again'):
+                self.engine.wait_glaze(4096 | 16384)
 
     def test_connected_kernel_with_missing_capabilities_is_not_reset(self):
         with patch('engine.time.sleep'), patch.object(self.engine, 'run', return_value=[

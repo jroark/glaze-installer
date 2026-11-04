@@ -22,6 +22,7 @@ glaze-os sources, read from sibling checkouts:
 cmake -S installer -B out/installer-native -DCMAKE_BUILD_TYPE=Release   # -DGLAZE_DIR=... to override
 cmake --build out/installer-native -j8
 python3 tests/installer.py && python3 tests/installer_apps.py && python3 tests/installer_maintenance.py
+python3 tests/installer_gui.py && python3 tests/installer_transport.py
 ```
 
 Finished installers go to the website through glaze-web's `site/downloads`.
