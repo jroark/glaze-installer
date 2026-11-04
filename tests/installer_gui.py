@@ -16,6 +16,7 @@ class InstallerGui(unittest.TestCase):
     def run_events(self, following, probe=False):
         root, window, ttk, dialogs = Mock(), Mock(), Mock(), Mock()
         ttk.Frame.return_value.winfo_reqheight.return_value = 450
+        root.winfo_reqwidth.return_value = 600
         widgets = types.SimpleNamespace(
             Tk=Mock(return_value=root), Toplevel=Mock(return_value=window),
             StringVar=Mock(), BooleanVar=Mock(), Text=Mock(),

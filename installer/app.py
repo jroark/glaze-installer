@@ -314,6 +314,12 @@ def main():
     uninstall_button = ttk.Button(maintenance_actions, text='Uninstall selected apps…', command=uninstall_apps)
     uninstall_button.pack(side='right')
     controls += [configure_button, uninstall_button]
+    def fit_window(height):
+        # Platform themes differ in widget width (macOS Aqua needs more than
+        # Windows for the maintenance actions), so never clip the content.
+        root.update_idletasks()
+        root.geometry(f'{max(620, root.winfo_reqwidth())}x{height}')
+
     def maintenance_mode(enabled):
         nonlocal base_height
         state['maintenance'] = enabled
@@ -334,7 +340,7 @@ def main():
             backup_changed()
         root.update_idletasks()
         base_height = max(450, frame.winfo_reqheight() + 10)
-        root.geometry(f'620x{base_height + (220 if state["details"] else 0)}')
+        fit_window(base_height + (220 if state["details"] else 0))
 
     def restore():
         state['confirming'] = True
@@ -369,10 +375,10 @@ def main():
         state['details'] = not state['details']
         if state['details']:
             details_frame.pack(fill='both', expand=True, pady=8)
-            root.geometry(f'620x{base_height + 220}')
+            fit_window(base_height + 220)
         else:
             details_frame.pack_forget()
-            root.geometry(f'620x{base_height}')
+            fit_window(base_height)
         details_button.configure(text='Hide details' if state['details'] else 'Show details')
     details_button = ttk.Button(frame, text='Show details', command=show_details)
     details_button.pack(anchor='w')
@@ -499,7 +505,7 @@ def main():
     root.update_idletasks()
     base_height = max(450, frame.winfo_reqheight() + 10)
     root.minsize(600, base_height)
-    root.geometry(f'620x{base_height}')
+    fit_window(base_height)
     poll()
     smoke_failed = False
     if args.smoke_test:
