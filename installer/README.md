@@ -33,6 +33,23 @@ and touch interaction, and keeps the display awake. After the final NAND boot,
 the normal Glaze UI and display timeout return. On failure, follow the computer
 while the device shows Installation Paused.
 
+If USB does not reconnect after a restart, the desktop installer opens a
+**Reconnect USB** dialog after 15 seconds. Unplug the USB cable and reconnect it
+to the same port, keeping external power connected. Installation continues
+automatically if Glaze reconnects within the 90-second wait. On timeout, a visible
+error explains whether programming has not started or programming was verified
+and only boot verification remains. After the latter, reopen the installer and
+use **Check status** instead of starting another installation.
+
+Read failures show the native diagnostic and session-log path in an error dialog.
+A snapshot failure can mean opening USB, the Glaze handshake, a transfer, or saving
+the snapshot failed; it does not always mean a cable problem. Windows logs are in
+`%LOCALAPPDATA%\Glaze Installer\Logs`.
+
+Windows snapshot files use delete sharing so the completed capture can remove
+its temporary file while the stream is open. Creation remains exclusive, and
+capture bytes and optional second-pass verification are unchanged.
+
 If NAND space is insufficient for staging GlazeBoot, use Windows CE to delete
 unwanted built-in apps, keeping PC Connect available, then retry installation.
 The installer reuses matching staged files and does not delete CE apps itself.
@@ -231,6 +248,8 @@ raw NAND. Keep external power connected during hardware validation.
 ```sh
 python3 installer/collect_downloads.py
 python3 tests/installer.py
+python3 tests/installer_gui.py
+python3 tests/installer_transport.py
 python3 tests/installer_apps.py
 python3 tests/installer_maintenance.py
 python3 tests/installer_system.py
