@@ -48,6 +48,19 @@ class InstallerTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, '^boot failed'):
                 self.engine.run('boot', 'artifacts')
 
+    def test_locked_device_maintenance_failure_asks_to_unlock(self):
+        process = Mock()
+        process.stdout = iter(['Glaze USB op 6 failed (-5)\n'])
+        process.wait.return_value = 1
+        with patch('engine.subprocess.Popen', return_value=process):
+            with self.assertRaisesRegex(RuntimeError, '^The BE-300 is locked. Slide to unlock it'):
+                self.engine.run('maintenance', 'status')
+        # The same failure outside maintenance keeps the generic message.
+        process.stdout = iter(['Glaze USB op 6 failed (-5)\n'])
+        with patch('engine.subprocess.Popen', return_value=process):
+            with self.assertRaisesRegex(RuntimeError, '^status failed'):
+                self.engine.run('status', 1, 0, 0)
+
     def test_snapshot_failure_preserves_stage_and_native_diagnostics(self):
         cases = [
             ('usb-open', 'USB: LIBUSB_ERROR_ACCESS', 'Couldn’t open the USB connection'),
