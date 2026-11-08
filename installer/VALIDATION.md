@@ -1,3 +1,41 @@
+# Glaze OS 1.3 installers 0.3.0 — 2026-11-07
+
+Both installers were rebuilt for Glaze OS 1.3, build `d83c1e0` (glaze-os
+`d83c1e0ba977`). They include SPL 3, the signed `glaze-1.3.gzu` (published to
+the App Store), the RAM boot payload, WL54-CF firmware and the 25 optional
+packages built against the 1.3 SDK, including Maps, Chess, TwixT, Breakout,
+Sky Raid and Muncher. Packaging verified the update signature and its exact
+match with `glaze.bin`.
+
+1.3's romfs is LZ4-compressed. The installer now reads and writes that format
+(app choices, the WL54-CF option and the RAM boot's session marker keep it), so
+every option fits, Windows CE and the firmware included. The NAND payload is
+built with `./build.sh all` on its own: with `glazeboot` among the goals,
+`PCCARDS` and `MODEM` default to 1 and the NAND romfs would no longer match
+the signed update.
+
+Passed:
+
+- All installer suites on macOS with native Homebrew pkg-config, with staged
+  resources (one Windows-only skip), including the byte-for-byte rebuild of
+  1.3's compressed romfs and the locked-device maintenance message.
+- The macOS app's bundled self-check (38 catalog entries) and both GUI smoke
+  modes (main window 504 px, maintenance 637 px; all fit).
+- The bundled macOS helpers are arm64 and load libusb from the app bundle
+  (`@rpath`).
+- In glaze-os at this build: `ota-test` and `hwfile-test`.
+
+Artifacts:
+
+- `Glaze-Installer-2026-11-07-d83c1e0-windows-x64.exe`: 28,885,653 bytes, SHA-256
+  `b4aa61f3d8a0a4f5f6a4382166910875a3da3de5ffd7a0df5f3eb355dbccafbb`
+- `Glaze-Installer-2026-11-07-d83c1e0-macos-arm64.dmg`: 22,255,479 bytes, SHA-256
+  `7d495eb0c8a1b1454d110eb23097bf94123c0a369f2ce645a858d554e659f513`
+
+Not tested here: the Windows setup under Wine (not installed on the build
+machine), physical installation or OS update on a BE-300 with these
+artifacts, Windows hardware USB, and other macOS releases.
+
 # Glaze OS 1.1 installers 0.2.0 — 2026-11-04
 
 Both installers were rebuilt for Glaze OS 1.1, build `4420239` (glaze-os

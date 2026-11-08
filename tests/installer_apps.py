@@ -196,8 +196,18 @@ class AppSelectionTest(unittest.TestCase):
         size = struct.unpack_from('<I', image, 76)[0] * 512
         files = entries(image[0x40000:0x40000 + size], b'GZRF')
         self.assertEqual(files['firmware/cf8385.bin'], (resources / 'firmware/cf8385.bin').read_bytes())
-        with self.assertRaisesRegex(ValueError, 'exceed device space'):
-            customize_logical(logical, catalog, [a['id'] for a in catalog], resources)
+        romfs = logical[0x40000:0x40000 + struct.unpack_from('<I', logical, 76)[0] * 512]
+        if compressed(romfs):
+            # An LZ4 romfs (Glaze 1.3) holds every option, Windows CE and firmware included.
+            image = customize_logical(logical, catalog, [a['id'] for a in catalog], resources)
+            size = struct.unpack_from('<I', image, 76)[0] * 512
+            self.assertLessEqual(size, 0x500000 - 0x40000)
+            files = entries(image[0x40000:0x40000 + size], b'GZRF')
+            self.assertIn('bin/wince', files)
+            self.assertIn('firmware/cf8385.bin', files)
+        else:
+            with self.assertRaisesRegex(ValueError, 'exceed device space'):
+                customize_logical(logical, catalog, [a['id'] for a in catalog], resources)
 
     def test_all_bundled_packages_fit_and_have_metadata(self):
         resources = Path(__file__).resolve().parents[1] / 'out/installer/resources'
