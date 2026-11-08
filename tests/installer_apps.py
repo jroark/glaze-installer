@@ -1,12 +1,27 @@
 """App selection changes the flashed contents, while preserving boot components."""
 from pathlib import Path
+import importlib.util
 import json
+import os
 import struct
 import sys
 import tempfile
 import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'installer'))
-from app_selection import archive, entries, customize_logical, install_packages, select
+from app_selection import archive, compressed, entries, customize_logical, install_packages, select
+
+GLAZE = Path(os.environ.get('GLAZE_DIR', Path(__file__).resolve().parents[2] / 'glaze-os')).resolve()
+
+
+def glaze_romfs():
+    """glaze-os's own reader (tools/romfs.py), when the sibling checkout has it."""
+    path = GLAZE / 'tools/romfs.py'
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location('glaze_romfs', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 CATALOG = [
     {'id': 'builtin:files', 'name': 'Files', 'kind': 'builtin', 'program': 'files', 'required': True, 'default': True},
@@ -32,11 +47,11 @@ class AppSelectionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Unknown'):
             select(CATALOG, ['package:unknown'])
 
-    def logical(self):
+    def logical(self, lz4=False):
         logical = bytearray(b'\xff' * (16 * 1024 * 1024))
-        blob = archive({'bin/files': b'files', 'bin/calculator': b'calculator',
+        blob = archive({'bin/files': b'files', 'bin/calculator': b'calculator' * 2000,
                         'bin/fs': b'fs', 'bin/springboard': b'springboard',
-                        'lib/libc.so.1': b'library', 'services.bin': b'services'})
+                        'lib/libc.so.1': b'library', 'services.bin': b'services'}, lz4)
         logical[0x40000:0x40000 + len(blob)] = blob
         struct.pack_into('<I', logical, 4 * 16 + 12, len(blob) // 512)
         return logical
@@ -111,6 +126,48 @@ class AppSelectionTest(unittest.TestCase):
             disabled = customize_logical(result, catalog, select(catalog), resources)
             size = struct.unpack_from('<I', disabled, 76)[0] * 512
             self.assertNotIn('firmware/cf8385.bin', entries(disabled[0x40000:0x40000 + size], b'GZRF'))
+
+    def test_compressed_romfs_round_trips_and_keeps_its_format(self):
+        files = {'bin/files': b'files' * 3000, 'lib/libc.so.1': bytes(range(256)) * 40, 'empty': b''}
+        blob = archive(files, lz4=True)
+        self.assertTrue(compressed(blob))
+        self.assertFalse(compressed(archive(files)))
+        self.assertEqual(entries(blob, b'GZRF'), files)
+        self.assertEqual(archive(entries(blob, b'GZRF'), lz4=True), blob)
+        reference = glaze_romfs()
+        if reference:
+            self.assertEqual(reference.entries(bytes(blob)), files)
+        feature = {'id': 'firmware:wl54cf', 'name': 'WL54-CF Wi-Fi firmware', 'kind': 'firmware',
+                   'program': 'wl54cf', 'default': False, 'files': ['firmware/cf8385.bin']}
+        catalog = CATALOG + [feature]
+        with tempfile.TemporaryDirectory() as tmp:
+            resources = Path(tmp)
+            (resources / 'firmware').mkdir()
+            (resources / 'firmware/cf8385.bin').write_bytes(b'synthetic-firmware-fixture')
+            logical = self.logical(lz4=True)
+            result = customize_logical(logical, catalog, select(catalog, ['firmware:wl54cf']), resources)
+            size = struct.unpack_from('<I', result, 76)[0] * 512
+            romfs = result[0x40000:0x40000 + size]
+            # Raw files in an archive marked compressed would be misread by the kernel.
+            self.assertTrue(compressed(romfs))
+            files = entries(romfs, b'GZRF')
+            self.assertNotIn('bin/calculator', files)
+            self.assertEqual(files['firmware/cf8385.bin'], b'synthetic-firmware-fixture')
+            if reference:
+                self.assertEqual(reference.entries(bytes(romfs)), files)
+            # The default choices reproduce the bundled image exactly: no spurious writes.
+            self.assertEqual(customize_logical(logical, catalog, select(catalog), resources), bytes(logical))
+
+    def test_bundled_os_romfs_is_rebuilt_byte_for_byte(self):
+        image = GLAZE / 'out/glaze.bin'
+        if not image.is_file():
+            self.skipTest('no built glaze-os out/glaze.bin')
+        logical = image.read_bytes()[:16 * 1024 * 1024]
+        size = struct.unpack_from('<I', logical, 76)[0] * 512
+        romfs = logical[0x40000:0x40000 + size]
+        rebuilt = archive(entries(romfs, b'GZRF'), compressed(romfs))
+        self.assertEqual(rebuilt, romfs[:len(rebuilt)])
+        self.assertEqual((len(rebuilt) + 511) // 512 * 512, size)
 
     def test_packaged_catalog_and_firmware_defaults(self):
         import hashlib

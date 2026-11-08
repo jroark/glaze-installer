@@ -165,7 +165,7 @@ def main():
     (runtime / 'python311._pth').write_text('python311.zip\n.\nDLLs\nLib\n../app\n')
     app = product / 'app'
     app.mkdir()
-    for name in ('app.py', 'engine.py', 'app_selection.py', 'system_image.py'):
+    for name in ('app.py', 'engine.py', 'app_selection.py', 'lz4block.py', 'system_image.py'):
         shutil.copy2(ROOT / 'installer' / name, app)
     run(cc, '-O2', '-static', '-municode', '-mwindows', ROOT / 'installer/windows-launcher.c', resource,
         '-o', product / 'Glaze Installer.exe')

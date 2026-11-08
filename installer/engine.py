@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from app_selection import load_catalog, select, customize_logical, install_packages, entries, archive
+from app_selection import load_catalog, select, customize_logical, install_packages, entries, archive, compressed
 from system_image import prepare_system
 
 RAW_SIZE = 17301504
@@ -238,9 +238,10 @@ class Installer:
         with tempfile.TemporaryDirectory(prefix='glaze-ram-') as tmp:
             folder = Path(tmp) / 'boot'
             shutil.copytree(self.resources / 'ram', folder)
-            ram_files = entries((folder / 'romfs.img').read_bytes(), b'GZRF')
+            ram_romfs = (folder / 'romfs.img').read_bytes()
+            ram_files = entries(ram_romfs, b'GZRF')
             ram_files['installer/session'] = b'GZREST1\n' if self.restoring else b'GZINST1\n'
-            (folder / 'romfs.img').write_bytes(archive(ram_files))
+            (folder / 'romfs.img').write_bytes(archive(ram_files, compressed(ram_romfs)))
             (folder / 'glaze.cfg').write_text(f'nand={mode}\nramfs_kb=2048\n')
             self.emit({'event': 'status', 'text': 'Starting Glaze…'})
             if self.verify_wince:
