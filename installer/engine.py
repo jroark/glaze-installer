@@ -154,6 +154,10 @@ class Installer:
                     message += f' Unplug USB, reconnect it to the same port, then try {action} again.'
                 else:
                     message += ' Check the diagnostic below and the backup folder before retrying.'
+            elif args[0] == 'maintenance' and any('Glaze USB op 6 failed (-5)' in line for line in diagnostics):
+                # Glaze refuses to launch apps while locked (GZ_EPERM), and a
+                # BE-300 left idle locks itself.
+                message = 'The BE-300 is locked. Slide to unlock it, then try again. Nothing was changed.'
             else:
                 message = f'{args[0]} failed ({stage}). No automatic retry was attempted.'
             if detail:
